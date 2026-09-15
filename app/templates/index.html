@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>CodeNote 직원 호출</title>
+  <meta name="description" content="CodeNote 직원 호출 시스템" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div id="app" class="app-shell"></div>
+
+  <div id="callOverlay" class="call-overlay hidden" aria-live="assertive">
+    <div id="callCard" class="call-card">
+      <button id="closeOverlay" type="button" class="overlay-close" aria-label="호출 팝업 닫기">×</button>
+      <div id="overlayService" class="overlay-service">간단서비스</div>
+      <div id="overlayNumber" class="overlay-number">1</div>
+      <div id="overlayMessage" class="overlay-message">간단서비스 창구로 와주세요</div>
+    </div>
+  </div>
+
+  <script>
+    window.SERVICE_META = {{ service_meta | tojson }};
+  </script>
+  <script src="/static/js/app.js" defer></script>
+</body>
+</html>
