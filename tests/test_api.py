@@ -14,8 +14,10 @@ def client():
     app = create_app({
         "TESTING": True,
         "DATABASE_URL": "sqlite:///:memory:",
-        "ADMIN_KEY": "test-key",
         "SEED_DEFAULT_STORES": False,
+        "AUTH_CHECKER": lambda code: {"status": "approved", "token": "test-token"}
+        if code == "test-key"
+        else {"status": "denied"},
     })
     with TestClient(app) as test_client:
         db = app.state.SessionLocal()
@@ -23,6 +25,8 @@ def client():
         db.add(Store(name="구매상담 코너"))
         db.commit()
         db.close()
+        login_response = test_client.post("/api/admin/login", json={"key": "test-key"})
+        assert login_response.status_code == 200
         yield test_client
 
 

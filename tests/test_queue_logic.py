@@ -20,7 +20,6 @@ def app_and_store():
     app = create_app({
         "TESTING": True,
         "DATABASE_URL": "sqlite:///:memory:",
-        "ADMIN_KEY": "test-key",
         "SEED_DEFAULT_STORES": False,
     })
     with TestClient(app):

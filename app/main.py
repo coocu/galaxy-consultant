@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import secrets
 import threading
@@ -19,13 +18,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .backup import make_backup_zip, restore_from_zip_bytes
 from .config import Settings, load_settings
 from .database import Base, build_engine, build_session_factory, get_db
-from .models import Store, UsedAdminKey
+from .models import Store
 from .services import (
     CALL_DIRECT,
     CALL_NORMAL,
@@ -156,14 +154,10 @@ def _check_poket_auth(auth_check_url: str, code: str) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
-def _verify_and_expire_admin_key(app: FastAPI, db: Session, code: str) -> None:
+def _verify_admin_key(app: FastAPI, code: str) -> None:
     auth_key = (code or "").strip()
     if not auth_key:
         raise HTTPException(status_code=401, detail="인증키를 입력하세요")
-
-    key_hash = hashlib.sha256(auth_key.encode("utf-8")).hexdigest()
-    if db.get(UsedAdminKey, key_hash) is not None:
-        raise HTTPException(status_code=401, detail="이미 사용된 인증키입니다")
 
     auth_checker = getattr(app.state, "auth_checker", None)
     if callable(auth_checker):
@@ -173,13 +167,6 @@ def _verify_and_expire_admin_key(app: FastAPI, db: Session, code: str) -> None:
 
     if not isinstance(result, dict) or result.get("status") != "approved" or not result.get("token"):
         raise HTTPException(status_code=401, detail="인증키가 올바르지 않습니다")
-
-    db.add(UsedAdminKey(key_hash=key_hash))
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(status_code=401, detail="이미 사용된 인증키입니다") from exc
 
 
 def _set_admin_cookie(response: JSONResponse, request: Request, token: str) -> None:
@@ -256,8 +243,8 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         return {"authenticated": _has_admin_session(request)}
 
     @app.post("/api/admin/login")
-    def admin_login(body: LoginBody, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
-        _verify_and_expire_admin_key(request.app, db, body.key)
+    def admin_login(body: LoginBody, request: Request) -> JSONResponse:
+        _verify_admin_key(request.app, body.key)
         token = _issue_admin_session(request.app)
         response = JSONResponse({"ok": True, "message": "인증되었습니다"})
         _set_admin_cookie(response, request, token)

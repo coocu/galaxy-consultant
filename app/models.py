@@ -74,9 +74,3 @@ class CallLog(Base):
 
     store: Mapped[Store] = relationship("Store", back_populates="call_logs")
 
-
-class UsedAdminKey(Base):
-    __tablename__ = "used_admin_keys"
-
-    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    used_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
