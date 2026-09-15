@@ -123,6 +123,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     @app.get("/display", response_class=HTMLResponse)
     def index(request: Request) -> HTMLResponse:
         return TEMPLATES.TemplateResponse(
+            request,
             "index.html",
             {
                 "request": request,

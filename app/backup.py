@@ -1,4 +1,4 @@
-"""ZIP 백업/복원 기능."""
+"""매장 카테고리 전용 ZIP 백업/복원 기능."""
 
 from __future__ import annotations
 
@@ -11,9 +11,14 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .models import CallLog, ServiceCounter, Store, Ticket
+from .models import Store
 
-BACKUP_VERSION = 1
+BACKUP_VERSION = 2
+SUPPORTED_BACKUP_VERSIONS = {1, BACKUP_VERSION}
+
+
+def _now_naive_utc() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -27,14 +32,15 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 
 def export_data(db: Session) -> dict[str, Any]:
-    stores = db.query(Store).order_by(Store.id.asc()).all()
-    counters = db.query(ServiceCounter).order_by(ServiceCounter.id.asc()).all()
-    tickets = db.query(Ticket).order_by(Ticket.id.asc()).all()
-    call_logs = db.query(CallLog).order_by(CallLog.id.asc()).all()
+    """매장 카테고리만 내보낸다.
 
+    번호표, 호출기록, 업무별 카운터는 백업하지 않는다.
+    카테고리마다 고유 id를 유지해야 이천/동해처럼 선택한 매장별 데이터가 섞이지 않는다.
+    """
+    stores = db.query(Store).order_by(Store.id.asc()).all()
     return {
         "version": BACKUP_VERSION,
-        "exported_at": datetime.now(UTC).replace(tzinfo=None).isoformat(),
+        "exported_at": _now_naive_utc().isoformat(),
         "stores": [
             {
                 "id": store.id,
@@ -44,43 +50,6 @@ def export_data(db: Session) -> dict[str, Any]:
                 "updated_at": _dt(store.updated_at),
             }
             for store in stores
-        ],
-        "service_counters": [
-            {
-                "id": counter.id,
-                "store_id": counter.store_id,
-                "service_type": counter.service_type,
-                "next_number": counter.next_number,
-                "current_number": counter.current_number,
-                "round_no": counter.round_no,
-                "updated_at": _dt(counter.updated_at),
-            }
-            for counter in counters
-        ],
-        "tickets": [
-            {
-                "id": ticket.id,
-                "store_id": ticket.store_id,
-                "service_type": ticket.service_type,
-                "round_no": ticket.round_no,
-                "ticket_number": ticket.ticket_number,
-                "status": ticket.status,
-                "created_at": _dt(ticket.created_at),
-                "called_at": _dt(ticket.called_at),
-            }
-            for ticket in tickets
-        ],
-        "call_logs": [
-            {
-                "id": call.id,
-                "store_id": call.store_id,
-                "service_type": call.service_type,
-                "round_no": call.round_no,
-                "ticket_number": call.ticket_number,
-                "call_type": call.call_type,
-                "created_at": _dt(call.created_at),
-            }
-            for call in call_logs
         ],
     }
 
@@ -92,7 +61,7 @@ def make_backup_zip(db: Session) -> bytes:
         archive.writestr("data.json", json.dumps(payload, ensure_ascii=False, indent=2))
         archive.writestr(
             "README.txt",
-            "CodeNote 직원 호출 시스템 백업 파일입니다. 관리자 화면의 복원 기능으로 업로드하세요.\n",
+            "CodeNote 직원 호출 시스템 매장 카테고리 백업 파일입니다. 번호표/호출기록은 포함되지 않습니다.\n",
         )
     return buffer.getvalue()
 
@@ -108,94 +77,60 @@ def restore_from_zip_bytes(db: Session, zip_bytes: bytes) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise ValueError("data.json 형식이 올바르지 않습니다") from exc
 
-    if data.get("version") != BACKUP_VERSION:
+    if data.get("version") not in SUPPORTED_BACKUP_VERSIONS:
         raise ValueError("지원하지 않는 백업 버전입니다")
+    if not isinstance(data.get("stores"), list):
+        raise ValueError("백업 데이터에 stores 목록이 없습니다")
 
-    for required_key in ("stores", "service_counters", "tickets", "call_logs"):
-        if not isinstance(data.get(required_key), list):
-            raise ValueError(f"백업 데이터에 {required_key} 목록이 없습니다")
-
-    db.query(CallLog).delete()
-    db.query(Ticket).delete()
-    db.query(ServiceCounter).delete()
-    db.query(Store).delete()
-    db.flush()
+    restored_ids: set[int] = set()
+    now = _now_naive_utc()
 
     for item in data["stores"]:
-        db.add(
-            Store(
-                id=int(item["id"]),
-                name=str(item["name"]),
-                is_active=bool(item.get("is_active", True)),
-                created_at=_parse_dt(item.get("created_at")) or datetime.now(UTC).replace(tzinfo=None),
-                updated_at=_parse_dt(item.get("updated_at")) or datetime.now(UTC).replace(tzinfo=None),
-            )
-        )
-    db.flush()
+        try:
+            store_id = int(item["id"])
+            name = str(item["name"]).strip()
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("매장 카테고리 백업 데이터 형식이 올바르지 않습니다") from exc
 
-    for item in data["service_counters"]:
-        db.add(
-            ServiceCounter(
-                id=int(item["id"]),
-                store_id=int(item["store_id"]),
-                service_type=str(item["service_type"]),
-                next_number=int(item.get("next_number", 1)),
-                current_number=item.get("current_number"),
-                round_no=int(item.get("round_no", 1)),
-                updated_at=_parse_dt(item.get("updated_at")) or datetime.now(UTC).replace(tzinfo=None),
-            )
-        )
-    db.flush()
+        if store_id < 1:
+            raise ValueError("매장 카테고리 ID는 1 이상이어야 합니다")
+        if not name:
+            raise ValueError("매장명이 비어 있는 백업 파일은 복원할 수 없습니다")
 
-    for item in data["tickets"]:
-        db.add(
-            Ticket(
-                id=int(item["id"]),
-                store_id=int(item["store_id"]),
-                service_type=str(item["service_type"]),
-                round_no=int(item.get("round_no", 1)),
-                ticket_number=int(item["ticket_number"]),
-                status=str(item.get("status", "waiting")),
-                created_at=_parse_dt(item.get("created_at")) or datetime.now(UTC).replace(tzinfo=None),
-                called_at=_parse_dt(item.get("called_at")),
-            )
-        )
-    db.flush()
+        restored_ids.add(store_id)
+        store = db.get(Store, store_id)
+        if store is None:
+            store = Store(id=store_id, name=name)
+            db.add(store)
+        else:
+            store.name = name
 
-    for item in data["call_logs"]:
-        db.add(
-            CallLog(
-                id=int(item["id"]),
-                store_id=int(item["store_id"]),
-                service_type=str(item["service_type"]),
-                round_no=int(item.get("round_no", 1)),
-                ticket_number=item.get("ticket_number"),
-                call_type=str(item["call_type"]),
-                created_at=_parse_dt(item.get("created_at")) or datetime.now(UTC).replace(tzinfo=None),
-            )
-        )
+        store.is_active = bool(item.get("is_active", True))
+        store.created_at = _parse_dt(item.get("created_at")) or store.created_at or now
+        store.updated_at = _parse_dt(item.get("updated_at")) or now
+
+    # 백업에 없는 매장은 삭제하지 않고 비활성화한다.
+    # 이렇게 해야 해당 매장에 이미 쌓인 번호표/호출기록이 사라지지 않는다.
+    deactivated_count = 0
+    existing_stores = db.query(Store).all()
+    for store in existing_stores:
+        if store.id not in restored_ids and store.is_active:
+            store.is_active = False
+            store.updated_at = now
+            deactivated_count += 1
 
     db.commit()
-    _reset_postgres_sequences(db)
+    _reset_postgres_store_sequence(db)
 
     return {
-        "stores": len(data["stores"]),
-        "service_counters": len(data["service_counters"]),
-        "tickets": len(data["tickets"]),
-        "call_logs": len(data["call_logs"]),
+        "stores": len(restored_ids),
+        "deactivated_missing_stores": deactivated_count,
     }
 
 
-def _reset_postgres_sequences(db: Session) -> None:
-    """PostgreSQL에서 수동 ID 복원 후 다음 자동 ID가 충돌하지 않도록 보정한다."""
+def _reset_postgres_store_sequence(db: Session) -> None:
+    """PostgreSQL에서 수동 ID 복원 후 stores 다음 자동 ID가 충돌하지 않도록 보정한다."""
     if db.bind is None or db.bind.dialect.name != "postgresql":
         return
-    statements = [
-        "SELECT setval(pg_get_serial_sequence('stores','id'), COALESCE((SELECT MAX(id) FROM stores), 1), true)",
-        "SELECT setval(pg_get_serial_sequence('service_counters','id'), COALESCE((SELECT MAX(id) FROM service_counters), 1), true)",
-        "SELECT setval(pg_get_serial_sequence('tickets','id'), COALESCE((SELECT MAX(id) FROM tickets), 1), true)",
-        "SELECT setval(pg_get_serial_sequence('call_logs','id'), COALESCE((SELECT MAX(id) FROM call_logs), 1), true)",
-    ]
-    for statement in statements:
-        db.execute(text(statement))
+    db.execute(text("SELECT setval(pg_get_serial_sequence('stores','id'), COALESCE((SELECT MAX(id) FROM stores), 1), true)"))
     db.commit()

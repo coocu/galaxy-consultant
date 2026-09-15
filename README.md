@@ -12,7 +12,7 @@ Render에 올려서 바로 테스트할 수 있는 반응형 웹앱입니다.
 - 호출 팝업: 화면 중앙에 큰 번호 표시
 - 음성 안내: `{번호}번 고객님. {업무명} 창구로 와주세요.`
 - 매장 관리: 매장 생성, 매장 이름 수정, 삭제 처리, 검색
-- ZIP 백업/복원: 매장, 번호표, 호출기록 전체 백업 및 복원
+- ZIP 백업/복원: 매장 카테고리만 백업 및 복원
 - 모바일/PC 반응형 UI
 - 번호표 출력 앱 연동 위치 주석 포함: `app/static/js/app.js`의 `issueTicket()` 함수
 
@@ -65,10 +65,13 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
-5. 환경변수에 `ADMIN_KEY`를 등록합니다.
-6. PostgreSQL을 사용할 경우 환경변수 `DATABASE_URL`을 등록합니다.
+5. 환경변수에 `PYTHON_VERSION=3.11.9`를 등록합니다.
+6. 환경변수에 `ADMIN_KEY`를 등록합니다.
+7. PostgreSQL을 사용할 경우 환경변수 `DATABASE_URL`을 등록합니다.
 
 `DATABASE_URL`이 없으면 서버 내부 SQLite 파일 `staff_call.db`를 사용합니다. Render에서 장기 운영하려면 PostgreSQL 연결을 권장합니다.
+
+Render가 최신 기본 Python을 쓰면 템플릿/의존성 동작이 달라질 수 있으므로, 이 프로젝트는 `.python-version`과 `render.yaml`에 Python 3.11.9를 지정했습니다.
 
 ## 주요 주소
 
@@ -91,6 +94,8 @@ uvicorn app.main:app --host 0.0.0.0 --port $PORT
 - 매장 이름 수정
 - 매장 삭제 처리
 - 비활성 매장 복구
+
+백업 ZIP에는 매장 카테고리만 들어갑니다. 번호표, 현재 호출번호, 호출기록, 업무별 카운터는 백업하지 않습니다. 복원 시 백업에 없는 매장은 삭제하지 않고 비활성화해서 기존 번호표/호출기록이 사라지지 않도록 했습니다.
 
 ## 초기화 기준
 

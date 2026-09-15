@@ -93,3 +93,43 @@ def test_backup_zip_and_restore_roundtrip(client):
     )
     assert restore_response.status_code == 200
     assert client.get("/api/stores?search=백업매장").json()["stores"][0]["name"] == "백업매장"
+
+
+def test_backup_contains_only_store_categories(client):
+    store_id = client.get('/api/stores').json()['stores'][0]['id']
+    ticket_response = client.post('/api/tickets', json={'store_id': store_id, 'service_type': SERVICE_SIMPLE})
+    assert ticket_response.status_code == 201
+
+    backup_response = client.get('/api/admin/backup', headers=auth_headers())
+    assert backup_response.status_code == 200
+
+    with zipfile.ZipFile(io.BytesIO(backup_response.content)) as archive:
+        data = __import__('json').loads(archive.read('data.json').decode('utf-8'))
+
+    assert list(data.keys()) == ['version', 'exported_at', 'stores']
+    assert data['stores']
+
+
+def test_ticket_numbers_and_calls_are_isolated_by_store(client):
+    stores = client.get('/api/stores').json()['stores']
+    first_store_id = stores[0]['id']
+    second_store_id = stores[1]['id']
+
+    first_ticket = client.post('/api/tickets', json={'store_id': first_store_id, 'service_type': SERVICE_SIMPLE})
+    second_ticket = client.post('/api/tickets', json={'store_id': second_store_id, 'service_type': SERVICE_SIMPLE})
+    assert first_ticket.json()['ticket']['ticket_number'] == 1
+    assert second_ticket.json()['ticket']['ticket_number'] == 1
+
+    call_response = client.post(
+        '/api/admin/call',
+        json={'store_id': first_store_id, 'service_type': SERVICE_SIMPLE, 'call_type': 'normal'},
+        headers=auth_headers(),
+    )
+    assert call_response.status_code == 200
+
+    first_state = client.get(f'/api/state/{first_store_id}').json()['state']
+    second_state = client.get(f'/api/state/{second_store_id}').json()['state']
+    assert first_state['services'][SERVICE_SIMPLE]['current_number'] == 1
+    assert first_state['services'][SERVICE_SIMPLE]['waiting_count'] == 0
+    assert second_state['services'][SERVICE_SIMPLE]['current_number'] is None
+    assert second_state['services'][SERVICE_SIMPLE]['waiting_count'] == 1
