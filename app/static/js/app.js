@@ -135,7 +135,7 @@ function renderHome() {
       <section class="home-card">
         <div class="home-logo">C</div>
         <h1 class="brand-title">직원 호출</h1>
-        <p class="sub-title">고객 호출 화면과 관리자 호출을 매장별로 분리합니다.</p>
+        <p class="sub-title">삼성스토어 대기 시스템.</p>
         <div class="home-buttons">
           <button class="btn btn-primary" data-link="/customer">고객</button>
           <button class="btn btn-ghost" data-link="/admin">관리자</button>
