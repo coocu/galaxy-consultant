@@ -477,7 +477,8 @@ async function issueTicket(serviceType) {
   });
   appState.ticket = payload.ticket;
 
-  // TODO: 나중에 기존 번호표 출력 앱과 하이브리드/WebView로 묶을 때 이 위치에 연결한다.
+  // 중요: 고객 웹 화면에서는 번호표를 직접 출력하지 않는다.
+  // 나중에 기존 번호표 출력 앱과 하이브리드/WebView로 묶을 때만 이 위치에 연결한다.
   // 예시: window.ReactNativeWebView?.postMessage(JSON.stringify({ type: "PRINT_TICKET", ticket: payload.ticket }));
   // 예시: Android.printTicket(JSON.stringify(payload.ticket));
 
@@ -497,7 +498,6 @@ async function callService(serviceType, callType, ticketNumber = null) {
     },
   });
   appState.adminState = payload.state;
-  showCallPopup(payload.call, true);
   renderAdmin();
 }
 
@@ -633,6 +633,7 @@ function speak(text) {
 }
 
 function showCallPopup(call, shouldSpeak) {
+  if (appState.route !== "/display") return;
   if (!call || !call.ticket_number) return;
   const meta = serviceMeta(call.service_type);
   $callCard.className = `call-card ${meta.theme}`;
