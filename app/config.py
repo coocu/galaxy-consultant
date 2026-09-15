@@ -9,9 +9,9 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Settings:
     database_url: str
-    admin_keys: tuple[str, ...]
     seed_default_stores: bool
     testing: bool
+    poket_auth_check_url: str
 
 
 def normalize_database_url(raw_url: str | None) -> str:
@@ -33,18 +33,19 @@ def load_settings(overrides: dict | None = None) -> Settings:
         or os.environ.get("DATABASE_URL")
     )
 
-    raw_admin_keys = str(overrides.get("ADMIN_KEY") or os.environ.get("ADMIN_KEY") or "kyh")
-    admin_keys = tuple(key.strip() for key in raw_admin_keys.split(",") if key.strip())
-    if not admin_keys:
-        admin_keys = ("kyh",)
-
     seed_default = overrides.get("SEED_DEFAULT_STORES")
     if seed_default is None:
         seed_default = not testing
 
+    poket_auth_check_url = str(
+        overrides.get("POKET_AUTH_CHECK_URL")
+        or os.environ.get("POKET_AUTH_CHECK_URL")
+        or "https://poketserver.onrender.com/app/check"
+    )
+
     return Settings(
         database_url=database_url,
-        admin_keys=admin_keys,
         seed_default_stores=bool(seed_default),
         testing=testing,
+        poket_auth_check_url=poket_auth_check_url,
     )

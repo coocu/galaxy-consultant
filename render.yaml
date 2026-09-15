@@ -7,7 +7,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: ADMIN_KEY
-        sync: false
       - key: DATABASE_URL
         sync: false

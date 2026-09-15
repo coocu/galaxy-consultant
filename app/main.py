@@ -2,23 +2,30 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import secrets
+import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from urllib import request as urllib_request
+from urllib.error import HTTPError, URLError
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .backup import make_backup_zip, restore_from_zip_bytes
 from .config import Settings, load_settings
 from .database import Base, build_engine, build_session_factory, get_db
-from .models import Store
+from .models import Store, UsedAdminKey
 from .services import (
     CALL_DIRECT,
     CALL_NORMAL,
@@ -40,6 +47,8 @@ from .services import (
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+ADMIN_SESSION_COOKIE = "codenote_staff_call_admin_session"
+ADMIN_SESSION_SECONDS = 30 * 60
 
 
 class LoginBody(BaseModel):
@@ -72,13 +81,31 @@ class ResetBody(BaseModel):
     service_type: str
 
 
-def require_admin(
-    request: Request,
-    x_admin_key: Annotated[str | None, Header(alias="X-Admin-Key")] = None,
-) -> None:
-    key = x_admin_key or request.query_params.get("admin_key")
-    if key not in request.app.state.settings.admin_keys:
-        raise HTTPException(status_code=401, detail="인증키가 올바르지 않습니다")
+def _cleanup_admin_sessions(app: FastAPI) -> None:
+    now = time.time()
+    expired = [token for token, expires_at in app.state.admin_sessions.items() if expires_at <= now]
+    for token in expired:
+        app.state.admin_sessions.pop(token, None)
+
+
+def _issue_admin_session(app: FastAPI) -> str:
+    with app.state.admin_session_lock:
+        _cleanup_admin_sessions(app)
+        token = secrets.token_urlsafe(32)
+        app.state.admin_sessions[token] = time.time() + ADMIN_SESSION_SECONDS
+        return token
+
+
+def _has_admin_session(request: Request) -> bool:
+    token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+    with request.app.state.admin_session_lock:
+        _cleanup_admin_sessions(request.app)
+        return bool(token and token in request.app.state.admin_sessions)
+
+
+def require_admin(request: Request) -> None:
+    if not _has_admin_session(request):
+        raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다")
 
 
 def api_error(exc: ValueError) -> HTTPException:
@@ -95,7 +122,81 @@ def seed_default_stores(db: Session, settings: Settings) -> None:
     db.commit()
 
 
+def _check_poket_auth(auth_check_url: str, code: str) -> dict[str, object]:
+    payload = json.dumps({"code": code}).encode("utf-8")
+    req = urllib_request.Request(
+        auth_check_url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=10) as response:
+            body = response.read().decode("utf-8")
+    except HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8")
+        except Exception:
+            body = ""
+        if body:
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                data = {}
+            detail = data.get("detail") or data.get("message") or "인증 서버에서 거절되었습니다"
+            raise HTTPException(status_code=401, detail=detail) from exc
+        raise HTTPException(status_code=502, detail="인증 서버 오류입니다") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise HTTPException(status_code=502, detail="인증 서버에 연결할 수 없습니다") from exc
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail="인증 서버 응답 형식이 올바르지 않습니다") from exc
+    return data if isinstance(data, dict) else {}
+
+
+def _verify_and_expire_admin_key(app: FastAPI, db: Session, code: str) -> None:
+    auth_key = (code or "").strip()
+    if not auth_key:
+        raise HTTPException(status_code=401, detail="인증키를 입력하세요")
+
+    key_hash = hashlib.sha256(auth_key.encode("utf-8")).hexdigest()
+    if db.get(UsedAdminKey, key_hash) is not None:
+        raise HTTPException(status_code=401, detail="이미 사용된 인증키입니다")
+
+    auth_checker = getattr(app.state, "auth_checker", None)
+    if callable(auth_checker):
+        result = auth_checker(auth_key)
+    else:
+        result = _check_poket_auth(app.state.settings.poket_auth_check_url, auth_key)
+
+    if not isinstance(result, dict) or result.get("status") != "approved" or not result.get("token"):
+        raise HTTPException(status_code=401, detail="인증키가 올바르지 않습니다")
+
+    db.add(UsedAdminKey(key_hash=key_hash))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=401, detail="이미 사용된 인증키입니다") from exc
+
+
+def _set_admin_cookie(response: JSONResponse, request: Request, token: str) -> None:
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    response.set_cookie(
+        ADMIN_SESSION_COOKIE,
+        token,
+        max_age=ADMIN_SESSION_SECONDS,
+        httponly=True,
+        secure=(not request.app.state.settings.testing and forwarded_proto == "https"),
+        samesite="lax",
+        path="/",
+    )
+
+
 def create_app(test_config: dict | None = None) -> FastAPI:
+    test_config = test_config or {}
     settings = load_settings(test_config)
     engine = build_engine(settings.database_url)
     session_local = build_session_factory(engine)
@@ -114,6 +215,9 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.engine = engine
     app.state.SessionLocal = session_local
+    app.state.admin_sessions = {}
+    app.state.admin_session_lock = threading.RLock()
+    app.state.auth_checker = test_config.get("AUTH_CHECKER")
 
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
@@ -147,11 +251,26 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         stores = db.execute(query.order_by(Store.name.asc())).scalars().all()
         return {"stores": [store_to_dict(store) for store in stores]}
 
+    @app.get("/api/admin/status")
+    def admin_status(request: Request) -> dict[str, object]:
+        return {"authenticated": _has_admin_session(request)}
+
     @app.post("/api/admin/login")
-    def admin_login(body: LoginBody, request: Request) -> dict[str, object]:
-        if body.key not in request.app.state.settings.admin_keys:
-            raise HTTPException(status_code=401, detail="인증키가 올바르지 않습니다")
-        return {"ok": True, "message": "인증되었습니다"}
+    def admin_login(body: LoginBody, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+        _verify_and_expire_admin_key(request.app, db, body.key)
+        token = _issue_admin_session(request.app)
+        response = JSONResponse({"ok": True, "message": "인증되었습니다"})
+        _set_admin_cookie(response, request, token)
+        return response
+
+    @app.post("/api/admin/logout")
+    def admin_logout(request: Request) -> JSONResponse:
+        token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+        with request.app.state.admin_session_lock:
+            request.app.state.admin_sessions.pop(token, None)
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(ADMIN_SESSION_COOKIE, path="/")
+        return response
 
     @app.get("/api/admin/stores", dependencies=[Depends(require_admin)])
     def list_admin_stores(search: str = "", db: Session = Depends(get_db)) -> dict[str, object]:

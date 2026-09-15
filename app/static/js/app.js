@@ -1,7 +1,8 @@
 const SERVICE_ORDER = ["simple_service", "purchase_consult"];
 const SERVICE_META = window.SERVICE_META || {};
-const ADMIN_KEY_STORAGE = "codenote_staff_call_admin_key";
 const VOICE_STORAGE = "codenote_staff_call_voice_enabled";
+const POPUP_VISIBLE_MS = 5000;
+const CALL_NUMBER_VISIBLE_MS = POPUP_VISIBLE_MS + 5000;
 
 const appState = {
   route: window.location.pathname,
@@ -11,20 +12,25 @@ const appState = {
   adminSearch: "",
   manageSearch: "",
   selectedCustomerStore: null,
+  selectedCustomerService: null,
   selectedAdminStore: null,
+  selectedAdminService: null,
+  selectedDisplayStore: null,
+  selectedDisplayService: null,
   customerState: null,
-  displayStore: null,
-  ticket: null,
-  adminKey: localStorage.getItem(ADMIN_KEY_STORAGE) || "",
   adminState: null,
   displayState: null,
+  adminAuthenticated: false,
   modalOpen: false,
   managementUnlocked: false,
   voiceEnabled: localStorage.getItem(VOICE_STORAGE) !== "0",
-  lastCallId: 0,
   lastCustomerCallId: 0,
+  lastDisplayCallId: 0,
   pollingTimer: null,
   callTimer: null,
+  visibleCustomerCalls: {},
+  visibleDisplayCalls: {},
+  visibleClearTimers: {},
 };
 
 const $app = document.getElementById("app");
@@ -53,6 +59,10 @@ function serviceMeta(serviceType) {
   };
 }
 
+function validServiceType(serviceType) {
+  return SERVICE_ORDER.includes(serviceType) ? serviceType : null;
+}
+
 function nowLabel() {
   const now = new Date();
   const month = String(now.getMonth() + 1).padStart(2, "0");
@@ -76,14 +86,20 @@ function clearPolling() {
 
 async function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
+  const fetchOptions = {
+    ...options,
+    headers,
+    credentials: "same-origin",
+  };
+  delete fetchOptions.json;
+  delete fetchOptions.admin;
+
   if (options.json !== undefined) {
     headers.set("Content-Type", "application/json");
-    options.body = JSON.stringify(options.json);
+    fetchOptions.body = JSON.stringify(options.json);
   }
-  if (options.admin) {
-    headers.set("X-Admin-Key", appState.adminKey);
-  }
-  const response = await fetch(path, { ...options, headers });
+
+  const response = await fetch(path, fetchOptions);
   if (!response.ok) {
     let message = "요청 처리 중 오류가 발생했습니다";
     try {
@@ -119,7 +135,7 @@ function renderHome() {
       <section class="home-card">
         <div class="home-logo">C</div>
         <h1 class="brand-title">직원 호출</h1>
-        <p class="sub-title">고객 호출 화면과 관리자 호출을 한 화면에서 관리합니다.</p>
+        <p class="sub-title">고객 호출 화면과 관리자 호출을 매장별로 분리합니다.</p>
         <div class="home-buttons">
           <button class="btn btn-primary" data-link="/customer">고객</button>
           <button class="btn btn-ghost" data-link="/admin">관리자</button>
@@ -141,6 +157,25 @@ function renderStoreList(stores, actionName) {
   `).join("");
 }
 
+function renderServiceChoice(mode, selectedStore) {
+  const title = mode === "admin" ? "관리할 업무를 선택하세요." : "업무를 선택하세요.";
+  return `
+    <section class="layout-card">
+      <h2 class="section-title">${escapeHtml(selectedStore.name)}</h2>
+      <p class="sub-title">${title}</p>
+      <div class="service-select">
+        ${SERVICE_ORDER.map((serviceType) => {
+          const meta = serviceMeta(serviceType);
+          const label = mode === "admin" ? meta.admin_label : meta.customer_label;
+          const action = mode === "admin" ? "selectAdminService" : mode === "display" ? "selectDisplayService" : "selectCustomerService";
+          const buttonClass = meta.theme === "red" ? "btn-red" : "btn-primary";
+          return `<button class="btn ${buttonClass}" data-action="${action}" data-service="${serviceType}">${escapeHtml(label)}</button>`;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderCustomer() {
   const selected = appState.selectedCustomerStore;
   const actions = `<button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`;
@@ -159,24 +194,38 @@ function renderCustomer() {
     return;
   }
 
+  if (!appState.selectedCustomerService) {
+    $app.innerHTML = `
+      ${headerHtml(
+        selected.name,
+        "간단서비스와 구매문의를 따로 선택합니다.",
+        `<button class="btn btn-ghost btn-small" data-action="changeCustomerStore">매장 변경</button><button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`
+      )}
+      ${renderServiceChoice("customer", selected)}
+    `;
+    return;
+  }
+
+  const meta = serviceMeta(appState.selectedCustomerService);
   $app.innerHTML = `
     ${headerHtml(
-      selected.name,
+      `${selected.name} · ${meta.customer_label}`,
       "관리자가 호출하면 이 화면 중앙에 크게 표시됩니다.",
-      `<button class="btn btn-primary btn-small" data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button><button class="btn btn-ghost btn-small" data-action="changeCustomerStore">매장 변경</button><button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`
+      `<button class="btn btn-primary btn-small" data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button><button class="btn btn-ghost btn-small" data-action="changeCustomerService">업무 변경</button><button class="btn btn-ghost btn-small" data-action="changeCustomerStore">매장 변경</button>`
     )}
     ${appState.voiceEnabled ? "" : `<div class="notice mt-1">호출 음성은 이 화면에서 '음성 시작'을 한 번 눌러야 안정적으로 나옵니다.</div>`}
-    <section class="grid-two mt-2">
-      ${SERVICE_ORDER.map((serviceType) => renderCustomerDisplayServiceCard(serviceType)).join("")}
+    <section class="single-service-wrap mt-2">
+      ${renderCustomerDisplayServiceCard(appState.selectedCustomerService, "customer")}
     </section>
   `;
 }
 
-function renderCustomerDisplayServiceCard(serviceType) {
+function renderCustomerDisplayServiceCard(serviceType, scope = "customer") {
   const meta = serviceMeta(serviceType);
-  const serviceState = appState.customerState?.services?.[serviceType];
+  const stateSource = scope === "display" ? appState.displayState : appState.customerState;
+  const serviceState = stateSource?.services?.[serviceType];
   const theme = meta.theme;
-  const current = serviceState?.current_number;
+  const visibleNumber = getVisibleCallNumber(scope, serviceType);
   const waitingCount = serviceState?.waiting_count ?? 0;
   const queue = serviceState?.waiting_tickets || [];
   return `
@@ -192,11 +241,11 @@ function renderCustomerDisplayServiceCard(serviceType) {
         <div class="now-time">${nowLabel()}</div>
       </div>
       <div class="current-box">
-        ${current ? `<div class="current-number ${theme}">${current}</div>` : `<div class="current-number wait">대기중</div>`}
+        ${visibleNumber ? `<div class="current-number ${theme}">${visibleNumber}</div>` : `<div class="current-number wait">대기중</div>`}
       </div>
       <div class="state-mini">
         <div class="state-pill"><span>대기 인원</span><strong>${waitingCount}명</strong></div>
-        <div class="state-pill"><span>현재 호출번호</span><strong>${current || "-"}</strong></div>
+        <div class="state-pill"><span>호출 상태</span><strong>${visibleNumber ? `${visibleNumber}번` : "대기중"}</strong></div>
       </div>
       <div class="queue-title">대기 목록</div>
       ${queue.length ? `<div class="queue-list">${queue.map((ticket) => `<span class="queue-chip">${ticket.ticket_number}</span>`).join("")}</div>` : `<div class="queue-empty">대기 중인 고객이 없습니다</div>`}
@@ -205,7 +254,7 @@ function renderCustomerDisplayServiceCard(serviceType) {
 }
 
 function renderAdmin() {
-  if (!appState.adminKey) {
+  if (!appState.adminAuthenticated) {
     clearPolling();
     $app.innerHTML = `
       ${headerHtml("관리자", "인증키를 입력하세요.", `<button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`)}
@@ -214,7 +263,6 @@ function renderAdmin() {
           <input id="adminKey" class="input" type="password" placeholder="인증키" autocomplete="current-password" />
           <button class="btn btn-primary" data-action="adminLogin">확인</button>
         </div>
-        <p class="sub-title">발급받은 인증키를 입력해 주세요.</p>
       </section>
     `;
     return;
@@ -240,15 +288,29 @@ function renderAdmin() {
     return;
   }
 
-  const displayUrl = `/display?store_id=${appState.selectedAdminStore.id}`;
+  if (!appState.selectedAdminService) {
+    $app.innerHTML = `
+      ${headerHtml(
+        appState.selectedAdminStore.name,
+        "갤럭시 컨설턴트와 구매상담을 따로 선택합니다.",
+        `<button class="btn btn-ghost btn-small" data-action="changeAdminStore">매장 변경</button><button class="btn btn-ghost btn-small" data-action="openManage">⚙ 매장관리</button><button class="btn btn-ghost btn-small" data-action="logoutAdmin">로그아웃</button>`
+      )}
+      ${renderServiceChoice("admin", appState.selectedAdminStore)}
+      ${renderManageModal()}
+    `;
+    return;
+  }
+
+  const meta = serviceMeta(appState.selectedAdminService);
+  const customerUrl = `/customer?store_id=${appState.selectedAdminStore.id}&service_type=${appState.selectedAdminService}`;
   $app.innerHTML = `
     ${headerHtml(
-      appState.selectedAdminStore.name,
-      "갤럭시 컨설턴트와 구매상담을 각각 따로 호출합니다.",
-      `<a class="btn btn-ghost btn-small" href="${displayUrl}" target="_blank" rel="noopener">호출화면</a><button class="btn btn-ghost btn-small" data-action="changeAdminStore">매장 변경</button><button class="btn btn-ghost btn-small" data-action="openManage">⚙ 매장관리</button><button class="btn btn-ghost btn-small" data-action="logoutAdmin">로그아웃</button>`
+      `${appState.selectedAdminStore.name} · ${meta.admin_label}`,
+      "선택한 업무만 호출합니다.",
+      `<a class="btn btn-ghost btn-small" href="${customerUrl}" target="_blank" rel="noopener">고객화면</a><button class="btn btn-ghost btn-small" data-action="changeAdminService">업무 변경</button><button class="btn btn-ghost btn-small" data-action="changeAdminStore">매장 변경</button><button class="btn btn-ghost btn-small" data-action="openManage">⚙ 매장관리</button><button class="btn btn-ghost btn-small" data-action="logoutAdmin">로그아웃</button>`
     )}
-    <section class="grid-two">
-      ${SERVICE_ORDER.map((serviceType) => renderAdminServiceCard(serviceType)).join("")}
+    <section class="single-service-wrap">
+      ${renderAdminServiceCard(appState.selectedAdminService)}
     </section>
     ${renderManageModal()}
   `;
@@ -364,10 +426,10 @@ function renderManageStoreRow(store) {
 }
 
 function renderDisplay() {
-  const selected = appState.displayStore;
+  const selected = appState.selectedDisplayStore;
   if (!selected) {
     $app.innerHTML = `
-      ${headerHtml("호출 화면", "매장을 선택하면 호출 팝업과 음성이 표시됩니다.", `<button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`)}
+      ${headerHtml("고객 호출 화면", "매장을 검색하고 선택하세요.", `<button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`)}
       <section class="layout-card">
         <div class="search-row">
           <input id="displaySearch" class="input" value="${escapeHtml(appState.customerSearch)}" placeholder="매장명 검색" />
@@ -379,48 +441,29 @@ function renderDisplay() {
     return;
   }
 
+  if (!appState.selectedDisplayService) {
+    $app.innerHTML = `
+      ${headerHtml(
+        selected.name,
+        "간단서비스와 구매문의를 따로 선택합니다.",
+        `<button class="btn btn-ghost btn-small" data-action="changeDisplayStore">매장 변경</button>`
+      )}
+      ${renderServiceChoice("display", selected)}
+    `;
+    return;
+  }
+
+  const meta = serviceMeta(appState.selectedDisplayService);
   $app.innerHTML = `
     ${headerHtml(
-      selected.name,
+      `${selected.name} · ${meta.customer_label}`,
       "관리자가 호출하면 이 화면 중앙에 크게 표시됩니다.",
-      `<button class="btn btn-primary btn-small" data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button><button class="btn btn-ghost btn-small" data-action="changeDisplayStore">매장 변경</button>`
+      `<button class="btn btn-primary btn-small" data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button><button class="btn btn-ghost btn-small" data-action="changeDisplayService">업무 변경</button><button class="btn btn-ghost btn-small" data-action="changeDisplayStore">매장 변경</button>`
     )}
     ${appState.voiceEnabled ? "" : `<div class="notice mt-1">브라우저 정책 때문에 호출 음성은 이 화면에서 '음성 시작'을 한 번 눌러야 안정적으로 나옵니다.</div>`}
-    <section class="grid-two mt-2">
-      ${SERVICE_ORDER.map((serviceType) => renderDisplayServiceCard(serviceType)).join("")}
+    <section class="single-service-wrap mt-2">
+      ${renderCustomerDisplayServiceCard(appState.selectedDisplayService, "display")}
     </section>
-  `;
-}
-
-function renderDisplayServiceCard(serviceType) {
-  const meta = serviceMeta(serviceType);
-  const serviceState = appState.displayState?.services?.[serviceType];
-  const theme = meta.theme;
-  const current = serviceState?.current_number;
-  const waitingCount = serviceState?.waiting_count ?? 0;
-  const queue = serviceState?.waiting_tickets || [];
-  return `
-    <article class="service-card ${theme}">
-      <div class="service-head">
-        <div class="service-title-wrap">
-          <div class="service-icon ${theme}">${theme === "red" ? "▣" : "♡"}</div>
-          <div>
-            <div class="service-small ${theme}">${theme === "red" ? "Premium Manager" : "Galaxy AI Consultant"}</div>
-            <div class="service-title">${escapeHtml(meta.customer_label)} 코너</div>
-          </div>
-        </div>
-        <div class="now-time">${nowLabel()}</div>
-      </div>
-      <div class="current-box">
-        ${current ? `<div class="current-number ${theme}">${current}</div>` : `<div class="current-number wait">대기중</div>`}
-      </div>
-      <div class="state-mini">
-        <div class="state-pill"><span>대기 인원</span><strong>${waitingCount}명</strong></div>
-        <div class="state-pill"><span>현재 호출번호</span><strong>${current || "-"}</strong></div>
-      </div>
-      <div class="queue-title">대기 목록</div>
-      ${queue.length ? `<div class="queue-list">${queue.map((ticket) => `<span class="queue-chip">${ticket.ticket_number}</span>`).join("")}</div>` : `<div class="queue-empty">대기 중인 고객이 없습니다</div>`}
-    </article>
   `;
 }
 
@@ -459,7 +502,8 @@ async function pollCustomerCalls() {
   if (payload.calls.length) {
     for (const call of payload.calls) {
       appState.lastCustomerCallId = Math.max(appState.lastCustomerCallId, call.id);
-      if (call.ticket_number) {
+      if (call.ticket_number && call.service_type === appState.selectedCustomerService) {
+        registerVisibleCall("customer", call);
         showCallPopup(call, appState.voiceEnabled);
       }
     }
@@ -468,23 +512,24 @@ async function pollCustomerCalls() {
 }
 
 async function loadDisplayState(initial = false) {
-  if (!appState.displayStore) return;
-  const payload = await apiFetch(`/api/state/${appState.displayStore.id}`);
+  if (!appState.selectedDisplayStore) return;
+  const payload = await apiFetch(`/api/state/${appState.selectedDisplayStore.id}`);
   appState.displayState = payload.state;
-  appState.displayStore = payload.state.store;
+  appState.selectedDisplayStore = payload.state.store;
   if (initial) {
-    appState.lastCallId = payload.state.last_call_id || 0;
+    appState.lastDisplayCallId = payload.state.last_call_id || 0;
   }
   renderDisplay();
 }
 
 async function pollDisplayCalls() {
-  if (!appState.displayStore) return;
-  const payload = await apiFetch(`/api/calls?store_id=${appState.displayStore.id}&after_id=${appState.lastCallId}`);
+  if (!appState.selectedDisplayStore) return;
+  const payload = await apiFetch(`/api/calls?store_id=${appState.selectedDisplayStore.id}&after_id=${appState.lastDisplayCallId}`);
   if (payload.calls.length) {
     for (const call of payload.calls) {
-      appState.lastCallId = Math.max(appState.lastCallId, call.id);
-      if (call.ticket_number) {
+      appState.lastDisplayCallId = Math.max(appState.lastDisplayCallId, call.id);
+      if (call.ticket_number && call.service_type === appState.selectedDisplayService) {
+        registerVisibleCall("display", call);
         showCallPopup(call, appState.voiceEnabled);
       }
     }
@@ -494,14 +539,13 @@ async function pollDisplayCalls() {
 
 async function adminLogin(key) {
   await apiFetch("/api/admin/login", { method: "POST", json: { key } });
-  appState.adminKey = key;
-  localStorage.setItem(ADMIN_KEY_STORAGE, key);
+  appState.adminAuthenticated = true;
   await loadAdminStores();
   renderAdmin();
 }
 
-async function issueTicket(serviceType) {
-  if (!appState.selectedCustomerStore) return;
+async function issueTicketForApp(serviceType) {
+  if (!appState.selectedCustomerStore) return null;
   const payload = await apiFetch("/api/tickets", {
     method: "POST",
     json: {
@@ -509,14 +553,18 @@ async function issueTicket(serviceType) {
       service_type: serviceType,
     },
   });
-  appState.ticket = payload.ticket;
 
-  // TODO: 나중에 기존 번호표 출력 앱과 하이브리드/WebView로 묶을 때 이 위치에 연결한다.
+  // 번호표 출력은 웹 화면에서 하지 않는다.
+  // 나중에 기존 번호표 출력 앱과 하이브리드/WebView로 묶을 때 이 위치에서 네이티브 출력 기능을 호출한다.
   // 예시: window.ReactNativeWebView?.postMessage(JSON.stringify({ type: "PRINT_TICKET", ticket: payload.ticket }));
   // 예시: Android.printTicket(JSON.stringify(payload.ticket));
 
-  renderCustomer();
+  return payload.ticket;
 }
+
+window.CodeNoteQueueBridge = {
+  issueTicket: issueTicketForApp,
+};
 
 async function callService(serviceType, callType, ticketNumber = null) {
   if (!appState.selectedAdminStore) return;
@@ -583,6 +631,9 @@ async function editStore(storeId) {
   if (appState.selectedCustomerStore?.id === storeId) {
     appState.selectedCustomerStore = payload.store;
   }
+  if (appState.selectedDisplayStore?.id === storeId) {
+    appState.selectedDisplayStore = payload.store;
+  }
   await loadAdminStores();
   renderAdmin();
 }
@@ -595,6 +646,7 @@ async function deleteStore(storeId) {
   await apiFetch(`/api/admin/stores/${storeId}`, { method: "DELETE", admin: true });
   if (appState.selectedAdminStore?.id === storeId) {
     appState.selectedAdminStore = null;
+    appState.selectedAdminService = null;
     appState.adminState = null;
   }
   await loadAdminStores();
@@ -608,7 +660,7 @@ async function restoreStore(storeId) {
 }
 
 async function downloadBackup() {
-  const response = await fetch("/api/admin/backup", { headers: { "X-Admin-Key": appState.adminKey } });
+  const response = await fetch("/api/admin/backup", { credentials: "same-origin" });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     throw new Error(payload?.detail || "백업 다운로드 실패");
@@ -631,14 +683,14 @@ async function restoreBackup() {
     alert("복원할 ZIP 파일을 선택하세요");
     return;
   }
-  const ok = window.confirm("현재 서버 데이터가 백업 파일 내용으로 교체됩니다. 복원할까요?");
+  const ok = window.confirm("현재 서버의 매장 카테고리가 백업 파일 기준으로 복원됩니다. 복원할까요?");
   if (!ok) return;
 
   const formData = new FormData();
   formData.append("file", file);
   const response = await fetch("/api/admin/restore", {
     method: "POST",
-    headers: { "X-Admin-Key": appState.adminKey },
+    credentials: "same-origin",
     body: formData,
   });
   if (!response.ok) {
@@ -647,6 +699,7 @@ async function restoreBackup() {
   }
   alert("복원이 완료되었습니다");
   appState.selectedAdminStore = null;
+  appState.selectedAdminService = null;
   appState.adminState = null;
   appState.manageSearch = "";
   appState.adminSearch = "";
@@ -665,6 +718,43 @@ function speak(text) {
   window.speechSynthesis.speak(utterance);
 }
 
+function getVisibleStore(scope) {
+  return scope === "display" ? appState.visibleDisplayCalls : appState.visibleCustomerCalls;
+}
+
+function getVisibleCallNumber(scope, serviceType) {
+  const store = getVisibleStore(scope);
+  const item = store[serviceType];
+  if (!item) return null;
+  if (Date.now() > item.expiresAt) {
+    delete store[serviceType];
+    return null;
+  }
+  return item.ticketNumber;
+}
+
+function registerVisibleCall(scope, call) {
+  const store = getVisibleStore(scope);
+  store[call.service_type] = {
+    ticketNumber: call.ticket_number,
+    expiresAt: Date.now() + CALL_NUMBER_VISIBLE_MS,
+  };
+
+  const timerKey = `${scope}:${call.service_type}`;
+  if (appState.visibleClearTimers[timerKey]) {
+    window.clearTimeout(appState.visibleClearTimers[timerKey]);
+  }
+  appState.visibleClearTimers[timerKey] = window.setTimeout(() => {
+    delete store[call.service_type];
+    delete appState.visibleClearTimers[timerKey];
+    if (scope === "display") {
+      renderDisplay();
+    } else {
+      renderCustomer();
+    }
+  }, CALL_NUMBER_VISIBLE_MS);
+}
+
 function showCallPopup(call, shouldSpeak) {
   if (!call || !call.ticket_number) return;
   const meta = serviceMeta(call.service_type);
@@ -679,18 +769,22 @@ function showCallPopup(call, shouldSpeak) {
   if (appState.callTimer) window.clearTimeout(appState.callTimer);
   appState.callTimer = window.setTimeout(() => {
     $overlay.classList.add("hidden");
-  }, 8000);
+  }, POPUP_VISIBLE_MS);
 }
 
 async function initCustomer() {
   clearPolling();
   const params = new URLSearchParams(window.location.search);
   const storeId = Number(params.get("store_id"));
+  const serviceType = validServiceType(params.get("service_type"));
   await loadCustomerStores();
   if (storeId) {
     appState.selectedCustomerStore = appState.customerStores.find((store) => store.id === storeId) || { id: storeId, name: "고객 호출 화면", is_active: true };
+    appState.selectedCustomerService = serviceType;
     await loadCustomerDisplayState(true);
-    setPolling(pollCustomerCalls, 1000);
+    if (appState.selectedCustomerService) {
+      setPolling(pollCustomerCalls, 1000);
+    }
   } else {
     renderCustomer();
   }
@@ -698,14 +792,14 @@ async function initCustomer() {
 
 async function initAdmin() {
   clearPolling();
-  if (appState.adminKey) {
-    try {
-      await apiFetch("/api/admin/login", { method: "POST", json: { key: appState.adminKey } });
+  try {
+    const status = await apiFetch("/api/admin/status");
+    appState.adminAuthenticated = Boolean(status.authenticated);
+    if (appState.adminAuthenticated) {
       await loadAdminStores();
-    } catch (_error) {
-      appState.adminKey = "";
-      localStorage.removeItem(ADMIN_KEY_STORAGE);
     }
+  } catch (_error) {
+    appState.adminAuthenticated = false;
   }
   renderAdmin();
 }
@@ -714,11 +808,15 @@ async function initDisplay() {
   clearPolling();
   const params = new URLSearchParams(window.location.search);
   const storeId = Number(params.get("store_id"));
+  const serviceType = validServiceType(params.get("service_type"));
   await loadCustomerStores();
   if (storeId) {
-    appState.displayStore = appState.customerStores.find((store) => store.id === storeId) || { id: storeId, name: "호출 화면", is_active: true };
+    appState.selectedDisplayStore = appState.customerStores.find((store) => store.id === storeId) || { id: storeId, name: "고객 호출 화면", is_active: true };
+    appState.selectedDisplayService = serviceType;
     await loadDisplayState(true);
-    setPolling(pollDisplayCalls, 1000);
+    if (appState.selectedDisplayService) {
+      setPolling(pollDisplayCalls, 1000);
+    }
   } else {
     renderDisplay();
   }
@@ -754,18 +852,34 @@ $app.addEventListener("click", (event) => {
 
   if (action === "selectCustomerStore") {
     appState.selectedCustomerStore = appState.customerStores.find((store) => store.id === storeId) || null;
-    appState.ticket = null;
+    appState.selectedCustomerService = null;
+    appState.customerState = null;
+    appState.lastCustomerCallId = 0;
+    safeRun(async () => {
+      await loadCustomerDisplayState(true);
+    });
+  }
+
+  if (action === "selectCustomerService") {
+    appState.selectedCustomerService = serviceType;
     safeRun(async () => {
       await loadCustomerDisplayState(true);
       setPolling(pollCustomerCalls, 1000);
     });
   }
 
+  if (action === "changeCustomerService") {
+    clearPolling();
+    appState.selectedCustomerService = null;
+    appState.lastCustomerCallId = appState.customerState?.last_call_id || 0;
+    renderCustomer();
+  }
+
   if (action === "changeCustomerStore") {
     clearPolling();
     appState.selectedCustomerStore = null;
+    appState.selectedCustomerService = null;
     appState.customerState = null;
-    appState.ticket = null;
     appState.lastCustomerCallId = 0;
     renderCustomer();
   }
@@ -776,11 +890,14 @@ $app.addEventListener("click", (event) => {
   }
 
   if (action === "logoutAdmin") {
-    appState.adminKey = "";
-    appState.selectedAdminStore = null;
-    appState.adminState = null;
-    localStorage.removeItem(ADMIN_KEY_STORAGE);
-    renderAdmin();
+    safeRun(async () => {
+      await apiFetch("/api/admin/logout", { method: "POST" });
+      appState.adminAuthenticated = false;
+      appState.selectedAdminStore = null;
+      appState.selectedAdminService = null;
+      appState.adminState = null;
+      renderAdmin();
+    });
   }
 
   if (action === "adminStoreSearch") {
@@ -791,15 +908,30 @@ $app.addEventListener("click", (event) => {
 
   if (action === "selectAdminStore") {
     appState.selectedAdminStore = appState.adminStores.find((store) => store.id === storeId) || null;
+    appState.selectedAdminService = null;
+    safeRun(async () => {
+      await loadAdminState();
+    });
+  }
+
+  if (action === "selectAdminService") {
+    appState.selectedAdminService = serviceType;
     safeRun(async () => {
       await loadAdminState();
       setPolling(loadAdminState, 1500);
     });
   }
 
+  if (action === "changeAdminService") {
+    clearPolling();
+    appState.selectedAdminService = null;
+    renderAdmin();
+  }
+
   if (action === "changeAdminStore") {
     clearPolling();
     appState.selectedAdminStore = null;
+    appState.selectedAdminService = null;
     appState.adminState = null;
     renderAdmin();
   }
@@ -835,7 +967,7 @@ $app.addEventListener("click", (event) => {
     appState.modalOpen = false;
     appState.managementUnlocked = false;
     renderAdmin();
-    if (appState.selectedAdminStore) {
+    if (appState.selectedAdminStore && appState.selectedAdminService) {
       setPolling(loadAdminState, 1500);
     }
   }
@@ -844,9 +976,8 @@ $app.addEventListener("click", (event) => {
     const key = document.getElementById("manageKey")?.value.trim() || "";
     safeRun(async () => {
       await apiFetch("/api/admin/login", { method: "POST", json: { key } });
+      appState.adminAuthenticated = true;
       appState.managementUnlocked = true;
-      appState.adminKey = key;
-      localStorage.setItem(ADMIN_KEY_STORAGE, key);
       await loadAdminStores();
       renderAdmin();
     });
@@ -888,18 +1019,36 @@ $app.addEventListener("click", (event) => {
   }
 
   if (action === "selectDisplayStore") {
-    appState.displayStore = appState.customerStores.find((store) => store.id === storeId) || null;
+    appState.selectedDisplayStore = appState.customerStores.find((store) => store.id === storeId) || null;
+    appState.selectedDisplayService = null;
+    appState.displayState = null;
+    appState.lastDisplayCallId = 0;
+    safeRun(async () => {
+      await loadDisplayState(true);
+    });
+  }
+
+  if (action === "selectDisplayService") {
+    appState.selectedDisplayService = serviceType;
     safeRun(async () => {
       await loadDisplayState(true);
       setPolling(pollDisplayCalls, 1000);
     });
   }
 
+  if (action === "changeDisplayService") {
+    clearPolling();
+    appState.selectedDisplayService = null;
+    appState.lastDisplayCallId = appState.displayState?.last_call_id || 0;
+    renderDisplay();
+  }
+
   if (action === "changeDisplayStore") {
     clearPolling();
-    appState.displayStore = null;
+    appState.selectedDisplayStore = null;
+    appState.selectedDisplayService = null;
     appState.displayState = null;
-    appState.lastCallId = 0;
+    appState.lastDisplayCallId = 0;
     renderDisplay();
   }
 
@@ -907,10 +1056,10 @@ $app.addEventListener("click", (event) => {
     appState.voiceEnabled = true;
     localStorage.setItem(VOICE_STORAGE, "1");
     speak("호출 음성이 켜졌습니다.");
-    if (appState.route === "/customer") {
-      renderCustomer();
-    } else {
+    if (appState.route === "/display") {
       renderDisplay();
+    } else {
+      renderCustomer();
     }
   }
 });
