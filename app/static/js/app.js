@@ -214,7 +214,7 @@ function renderAdmin() {
           <input id="adminKey" class="input" type="password" placeholder="인증키" autocomplete="current-password" />
           <button class="btn btn-primary" data-action="adminLogin">확인</button>
         </div>
-        <p class="sub-title">기본 인증키는 서버 환경변수 ADMIN_KEY로 변경할 수 있습니다.</p>
+        <p class="sub-title">발급받은 인증키를 입력해 주세요.</p>
       </section>
     `;
     return;
