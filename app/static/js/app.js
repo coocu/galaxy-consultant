@@ -12,6 +12,7 @@ const appState = {
   manageSearch: "",
   selectedCustomerStore: null,
   selectedAdminStore: null,
+  customerState: null,
   displayStore: null,
   ticket: null,
   adminKey: localStorage.getItem(ADMIN_KEY_STORAGE) || "",
@@ -19,8 +20,9 @@ const appState = {
   displayState: null,
   modalOpen: false,
   managementUnlocked: false,
-  voiceEnabled: localStorage.getItem(VOICE_STORAGE) === "1",
+  voiceEnabled: localStorage.getItem(VOICE_STORAGE) !== "0",
   lastCallId: 0,
+  lastCustomerCallId: 0,
   pollingTimer: null,
   callTimer: null,
 };
@@ -117,7 +119,7 @@ function renderHome() {
       <section class="home-card">
         <div class="home-logo">C</div>
         <h1 class="brand-title">직원 호출</h1>
-        <p class="sub-title">고객 번호표 발급과 관리자 호출을 한 화면에서 관리합니다.</p>
+        <p class="sub-title">고객 호출 화면과 관리자 호출을 한 화면에서 관리합니다.</p>
         <div class="home-buttons">
           <button class="btn btn-primary" data-link="/customer">고객</button>
           <button class="btn btn-ghost" data-link="/admin">관리자</button>
@@ -157,42 +159,48 @@ function renderCustomer() {
     return;
   }
 
-  const ticket = appState.ticket;
   $app.innerHTML = `
     ${headerHtml(
       selected.name,
-      "업무를 선택하면 번호표가 발급됩니다.",
-      `<button class="btn btn-ghost btn-small" data-action="changeCustomerStore">매장 변경</button><button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`
+      "관리자가 호출하면 이 화면 중앙에 크게 표시됩니다.",
+      `<button class="btn btn-primary btn-small" data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button><button class="btn btn-ghost btn-small" data-action="changeCustomerStore">매장 변경</button><button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`
     )}
-    <section class="layout-card">
-      ${ticket ? renderTicketResult(ticket) : renderCustomerServiceButtons()}
+    ${appState.voiceEnabled ? "" : `<div class="notice mt-1">호출 음성은 이 화면에서 '음성 시작'을 한 번 눌러야 안정적으로 나옵니다.</div>`}
+    <section class="grid-two mt-2">
+      ${SERVICE_ORDER.map((serviceType) => renderCustomerDisplayServiceCard(serviceType)).join("")}
     </section>
   `;
 }
 
-function renderCustomerServiceButtons() {
+function renderCustomerDisplayServiceCard(serviceType) {
+  const meta = serviceMeta(serviceType);
+  const serviceState = appState.customerState?.services?.[serviceType];
+  const theme = meta.theme;
+  const current = serviceState?.current_number;
+  const waitingCount = serviceState?.waiting_count ?? 0;
+  const queue = serviceState?.waiting_tickets || [];
   return `
-    <div class="service-select">
-      <button class="btn btn-primary" data-action="issueTicket" data-service="simple_service">간단서비스</button>
-      <button class="btn btn-red" data-action="issueTicket" data-service="purchase_consult">구매문의</button>
-    </div>
-  `;
-}
-
-function renderTicketResult(ticket) {
-  const meta = serviceMeta(ticket.service_type);
-  const isRed = meta.theme === "red";
-  return `
-    <div class="ticket-result">
-      <div class="ticket-label">${escapeHtml(meta.customer_label)}</div>
-      <div class="ticket-number ${isRed ? "red" : ""}">${ticket.ticket_number}</div>
-      <div class="ticket-guide">번호표가 발급되었습니다.</div>
-      <p class="sub-title">호출될 때까지 잠시만 기다려주세요.</p>
-      <div class="service-select mt-3">
-        <button class="btn ${isRed ? "btn-red" : "btn-primary"}" data-action="issueAgain">같은 업무 번호표 추가 발급</button>
-        <button class="btn btn-ghost" data-action="clearTicket">다른 업무 선택</button>
+    <article class="service-card ${theme}">
+      <div class="service-head">
+        <div class="service-title-wrap">
+          <div class="service-icon ${theme}">${theme === "red" ? "▣" : "♡"}</div>
+          <div>
+            <div class="service-small ${theme}">${theme === "red" ? "Premium Manager" : "Galaxy AI Consultant"}</div>
+            <div class="service-title">${escapeHtml(meta.customer_label)} 코너</div>
+          </div>
+        </div>
+        <div class="now-time">${nowLabel()}</div>
       </div>
-    </div>
+      <div class="current-box">
+        ${current ? `<div class="current-number ${theme}">${current}</div>` : `<div class="current-number wait">대기중</div>`}
+      </div>
+      <div class="state-mini">
+        <div class="state-pill"><span>대기 인원</span><strong>${waitingCount}명</strong></div>
+        <div class="state-pill"><span>현재 호출번호</span><strong>${current || "-"}</strong></div>
+      </div>
+      <div class="queue-title">대기 목록</div>
+      ${queue.length ? `<div class="queue-list">${queue.map((ticket) => `<span class="queue-chip">${ticket.ticket_number}</span>`).join("")}</div>` : `<div class="queue-empty">대기 중인 고객이 없습니다</div>`}
+    </article>
   `;
 }
 
@@ -253,7 +261,6 @@ function renderAdminServiceCard(serviceType) {
   const current = serviceState?.current_number;
   const waitingCount = serviceState?.waiting_count ?? 0;
   const nextNumber = serviceState?.next_number ?? 1;
-  const queue = serviceState?.waiting_tickets || [];
   return `
     <article class="service-card ${theme}">
       <div class="service-head">
@@ -282,9 +289,6 @@ function renderAdminServiceCard(serviceType) {
         <button class="btn ${theme === "red" ? "btn-outline-red" : "btn-outline-blue"}" data-action="directCall" data-service="${serviceType}">지정호출</button>
         <button class="btn btn-danger" data-action="resetService" data-service="${serviceType}">초기화</button>
       </div>
-
-      <div class="queue-title">대기 목록</div>
-      ${queue.length ? `<div class="queue-list">${queue.map((ticket) => `<span class="queue-chip">${ticket.ticket_number}</span>`).join("")}</div>` : `<div class="queue-empty">대기 중인 고객이 없습니다</div>`}
     </article>
   `;
 }
@@ -316,7 +320,7 @@ function renderManageUnlock() {
 
 function renderManageContent() {
   return `
-    <div class="notice">삭제는 실제 데이터 삭제가 아니라 비활성화 처리입니다. 백업 ZIP은 매장, 번호표, 호출기록을 포함합니다.</div>
+    <div class="notice">삭제는 실제 데이터 삭제가 아니라 비활성화 처리입니다. 백업 ZIP은 매장 카테고리만 포함합니다.</div>
 
     <div class="manage-row mt-3">
       <input id="addStoreName" class="input" placeholder="새 매장명" />
@@ -394,6 +398,7 @@ function renderDisplayServiceCard(serviceType) {
   const theme = meta.theme;
   const current = serviceState?.current_number;
   const waitingCount = serviceState?.waiting_count ?? 0;
+  const queue = serviceState?.waiting_tickets || [];
   return `
     <article class="service-card ${theme}">
       <div class="service-head">
@@ -409,8 +414,12 @@ function renderDisplayServiceCard(serviceType) {
       <div class="current-box">
         ${current ? `<div class="current-number ${theme}">${current}</div>` : `<div class="current-number wait">대기중</div>`}
       </div>
+      <div class="state-mini">
+        <div class="state-pill"><span>대기 인원</span><strong>${waitingCount}명</strong></div>
+        <div class="state-pill"><span>현재 호출번호</span><strong>${current || "-"}</strong></div>
+      </div>
       <div class="queue-title">대기 목록</div>
-      <div class="state-pill"><span>대기 인원</span><strong>${waitingCount}명</strong></div>
+      ${queue.length ? `<div class="queue-list">${queue.map((ticket) => `<span class="queue-chip">${ticket.ticket_number}</span>`).join("")}</div>` : `<div class="queue-empty">대기 중인 고객이 없습니다</div>`}
     </article>
   `;
 }
@@ -431,6 +440,31 @@ async function loadAdminState() {
   appState.adminState = payload.state;
   appState.selectedAdminStore = payload.state.store;
   renderAdmin();
+}
+
+async function loadCustomerDisplayState(initial = false) {
+  if (!appState.selectedCustomerStore) return;
+  const payload = await apiFetch(`/api/state/${appState.selectedCustomerStore.id}`);
+  appState.customerState = payload.state;
+  appState.selectedCustomerStore = payload.state.store;
+  if (initial) {
+    appState.lastCustomerCallId = payload.state.last_call_id || 0;
+  }
+  renderCustomer();
+}
+
+async function pollCustomerCalls() {
+  if (!appState.selectedCustomerStore) return;
+  const payload = await apiFetch(`/api/calls?store_id=${appState.selectedCustomerStore.id}&after_id=${appState.lastCustomerCallId}`);
+  if (payload.calls.length) {
+    for (const call of payload.calls) {
+      appState.lastCustomerCallId = Math.max(appState.lastCustomerCallId, call.id);
+      if (call.ticket_number) {
+        showCallPopup(call, appState.voiceEnabled);
+      }
+    }
+  }
+  await loadCustomerDisplayState(false);
 }
 
 async function loadDisplayState(initial = false) {
@@ -477,8 +511,7 @@ async function issueTicket(serviceType) {
   });
   appState.ticket = payload.ticket;
 
-  // 중요: 고객 웹 화면에서는 번호표를 직접 출력하지 않는다.
-  // 나중에 기존 번호표 출력 앱과 하이브리드/WebView로 묶을 때만 이 위치에 연결한다.
+  // TODO: 나중에 기존 번호표 출력 앱과 하이브리드/WebView로 묶을 때 이 위치에 연결한다.
   // 예시: window.ReactNativeWebView?.postMessage(JSON.stringify({ type: "PRINT_TICKET", ticket: payload.ticket }));
   // 예시: Android.printTicket(JSON.stringify(payload.ticket));
 
@@ -633,7 +666,6 @@ function speak(text) {
 }
 
 function showCallPopup(call, shouldSpeak) {
-  if (appState.route !== "/display") return;
   if (!call || !call.ticket_number) return;
   const meta = serviceMeta(call.service_type);
   $callCard.className = `call-card ${meta.theme}`;
@@ -652,8 +684,16 @@ function showCallPopup(call, shouldSpeak) {
 
 async function initCustomer() {
   clearPolling();
+  const params = new URLSearchParams(window.location.search);
+  const storeId = Number(params.get("store_id"));
   await loadCustomerStores();
-  renderCustomer();
+  if (storeId) {
+    appState.selectedCustomerStore = appState.customerStores.find((store) => store.id === storeId) || { id: storeId, name: "고객 호출 화면", is_active: true };
+    await loadCustomerDisplayState(true);
+    setPolling(pollCustomerCalls, 1000);
+  } else {
+    renderCustomer();
+  }
 }
 
 async function initAdmin() {
@@ -715,25 +755,18 @@ $app.addEventListener("click", (event) => {
   if (action === "selectCustomerStore") {
     appState.selectedCustomerStore = appState.customerStores.find((store) => store.id === storeId) || null;
     appState.ticket = null;
-    renderCustomer();
+    safeRun(async () => {
+      await loadCustomerDisplayState(true);
+      setPolling(pollCustomerCalls, 1000);
+    });
   }
 
   if (action === "changeCustomerStore") {
+    clearPolling();
     appState.selectedCustomerStore = null;
+    appState.customerState = null;
     appState.ticket = null;
-    renderCustomer();
-  }
-
-  if (action === "issueTicket") {
-    safeRun(() => issueTicket(serviceType));
-  }
-
-  if (action === "issueAgain") {
-    safeRun(() => issueTicket(appState.ticket.service_type));
-  }
-
-  if (action === "clearTicket") {
-    appState.ticket = null;
+    appState.lastCustomerCallId = 0;
     renderCustomer();
   }
 
@@ -874,7 +907,11 @@ $app.addEventListener("click", (event) => {
     appState.voiceEnabled = true;
     localStorage.setItem(VOICE_STORAGE, "1");
     speak("호출 음성이 켜졌습니다.");
-    renderDisplay();
+    if (appState.route === "/customer") {
+      renderCustomer();
+    } else {
+      renderDisplay();
+    }
   }
 });
 
