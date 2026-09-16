@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+import threading
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -35,6 +36,25 @@ CALL_DIRECT = "direct"
 CALL_RESET = "reset"
 
 
+
+_counter_locks_guard = threading.RLock()
+_counter_locks: dict[tuple[int, str], threading.RLock] = {}
+
+
+def _counter_lock_for(store_id: int, service_type: str) -> threading.RLock:
+    """같은 매장/업무 번호 발급·호출·초기화를 한 프로세스 안에서 직렬화한다.
+
+    PostgreSQL은 SELECT FOR UPDATE로 보호되고, SQLite 테스트/소규모 배포에서는
+    이 프로세스 락이 동시에 들어온 다중 키오스크 요청의 번호 중복을 막는다.
+    """
+    key = (int(store_id), service_type)
+    with _counter_locks_guard:
+        lock = _counter_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _counter_locks[key] = lock
+        return lock
+
 def validate_service_type(service_type: str) -> str:
     if service_type not in VALID_SERVICES:
         raise ValueError("지원하지 않는 업무입니다")
@@ -48,15 +68,16 @@ def get_store_or_raise(db: Session, store_id: int) -> Store:
     return store
 
 
-def get_or_create_counter(db: Session, store_id: int, service_type: str) -> ServiceCounter:
+def get_or_create_counter(db: Session, store_id: int, service_type: str, lock: bool = False) -> ServiceCounter:
     validate_service_type(service_type)
     get_store_or_raise(db, store_id)
-    counter = db.execute(
-        select(ServiceCounter).where(
-            ServiceCounter.store_id == store_id,
-            ServiceCounter.service_type == service_type,
-        )
-    ).scalar_one_or_none()
+    query = select(ServiceCounter).where(
+        ServiceCounter.store_id == store_id,
+        ServiceCounter.service_type == service_type,
+    )
+    if lock:
+        query = query.with_for_update()
+    counter = db.execute(query).scalar_one_or_none()
     if counter is None:
         counter = ServiceCounter(
             store_id=store_id,
@@ -88,6 +109,7 @@ def store_to_dict(store: Store) -> dict[str, Any]:
     return {
         "id": store.id,
         "name": store.name,
+        "code": store.code,
         "is_active": store.is_active,
         "created_at": store.created_at.isoformat() if store.created_at else None,
         "updated_at": store.updated_at.isoformat() if store.updated_at else None,
@@ -118,75 +140,78 @@ def build_speech_text(service_type: str, ticket_number: int | None) -> str:
 
 def issue_ticket(db: Session, store_id: int, service_type: str) -> Ticket:
     validate_service_type(service_type)
-    store = get_store_or_raise(db, store_id)
-    if not store.is_active:
-        raise ValueError("현재 사용할 수 없는 매장입니다")
+    with _counter_lock_for(store_id, service_type):
+        store = get_store_or_raise(db, store_id)
+        if not store.is_active:
+            raise ValueError("현재 사용할 수 없는 매장입니다")
 
-    counter = get_or_create_counter(db, store_id, service_type)
-    ticket = Ticket(
-        store_id=store_id,
-        service_type=service_type,
-        round_no=counter.round_no,
-        ticket_number=counter.next_number,
-        status="waiting",
-    )
-    counter.next_number += 1
-    db.add(ticket)
-    db.commit()
-    db.refresh(ticket)
-    return ticket
+        counter = get_or_create_counter(db, store_id, service_type, lock=True)
+        ticket = Ticket(
+            store_id=store_id,
+            service_type=service_type,
+            round_no=counter.round_no,
+            ticket_number=counter.next_number,
+            status="waiting",
+        )
+        counter.next_number += 1
+        db.add(ticket)
+        db.commit()
+        db.refresh(ticket)
+        return ticket
 
 
 def call_next(db: Session, store_id: int, service_type: str) -> CallLog:
     validate_service_type(service_type)
-    counter = get_or_create_counter(db, store_id, service_type)
-    ticket = db.execute(
-        select(Ticket)
-        .where(
-            Ticket.store_id == store_id,
-            Ticket.service_type == service_type,
-            Ticket.round_no == counter.round_no,
-            Ticket.status == "waiting",
-        )
-        .order_by(Ticket.ticket_number.asc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if ticket is None:
-        raise ValueError("대기 고객이 없습니다")
+    with _counter_lock_for(store_id, service_type):
+        counter = get_or_create_counter(db, store_id, service_type, lock=True)
+        ticket = db.execute(
+            select(Ticket)
+            .where(
+                Ticket.store_id == store_id,
+                Ticket.service_type == service_type,
+                Ticket.round_no == counter.round_no,
+                Ticket.status == "waiting",
+            )
+            .order_by(Ticket.ticket_number.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if ticket is None:
+            raise ValueError("대기 고객이 없습니다")
 
-    ticket.status = "called"
-    ticket.called_at = datetime.now(UTC).replace(tzinfo=None)
-    counter.current_number = ticket.ticket_number
-    call = CallLog(
-        store_id=store_id,
-        service_type=service_type,
-        round_no=counter.round_no,
-        ticket_number=ticket.ticket_number,
-        call_type=CALL_NORMAL,
-    )
-    db.add(call)
-    db.commit()
-    db.refresh(call)
-    return call
+        ticket.status = "called"
+        ticket.called_at = datetime.now(UTC).replace(tzinfo=None)
+        counter.current_number = ticket.ticket_number
+        call = CallLog(
+            store_id=store_id,
+            service_type=service_type,
+            round_no=counter.round_no,
+            ticket_number=ticket.ticket_number,
+            call_type=CALL_NORMAL,
+        )
+        db.add(call)
+        db.commit()
+        db.refresh(call)
+        return call
 
 
 def recall_last(db: Session, store_id: int, service_type: str) -> CallLog:
     validate_service_type(service_type)
-    counter = get_or_create_counter(db, store_id, service_type)
-    if counter.current_number is None:
-        raise ValueError("재호출할 번호가 없습니다")
+    with _counter_lock_for(store_id, service_type):
+        counter = get_or_create_counter(db, store_id, service_type, lock=True)
+        if counter.current_number is None:
+            raise ValueError("재호출할 번호가 없습니다")
 
-    call = CallLog(
-        store_id=store_id,
-        service_type=service_type,
-        round_no=counter.round_no,
-        ticket_number=counter.current_number,
-        call_type=CALL_RECALL,
-    )
-    db.add(call)
-    db.commit()
-    db.refresh(call)
-    return call
+        call = CallLog(
+            store_id=store_id,
+            service_type=service_type,
+            round_no=counter.round_no,
+            ticket_number=counter.current_number,
+            call_type=CALL_RECALL,
+        )
+        db.add(call)
+        db.commit()
+        db.refresh(call)
+        return call
 
 
 def direct_call(db: Session, store_id: int, service_type: str, ticket_number: int) -> CallLog:
@@ -194,59 +219,61 @@ def direct_call(db: Session, store_id: int, service_type: str, ticket_number: in
     if ticket_number < 1:
         raise ValueError("호출번호는 1 이상이어야 합니다")
 
-    counter = get_or_create_counter(db, store_id, service_type)
-    ticket = db.execute(
-        select(Ticket).where(
-            Ticket.store_id == store_id,
-            Ticket.service_type == service_type,
-            Ticket.round_no == counter.round_no,
-            Ticket.ticket_number == ticket_number,
-            Ticket.status == "waiting",
-        )
-    ).scalar_one_or_none()
-    if ticket is not None:
-        ticket.status = "called"
-        ticket.called_at = datetime.now(UTC).replace(tzinfo=None)
+    with _counter_lock_for(store_id, service_type):
+        counter = get_or_create_counter(db, store_id, service_type, lock=True)
+        ticket = db.execute(
+            select(Ticket).where(
+                Ticket.store_id == store_id,
+                Ticket.service_type == service_type,
+                Ticket.round_no == counter.round_no,
+                Ticket.ticket_number == ticket_number,
+                Ticket.status == "waiting",
+            )
+        ).scalar_one_or_none()
+        if ticket is not None:
+            ticket.status = "called"
+            ticket.called_at = datetime.now(UTC).replace(tzinfo=None)
 
-    counter.current_number = ticket_number
-    call = CallLog(
-        store_id=store_id,
-        service_type=service_type,
-        round_no=counter.round_no,
-        ticket_number=ticket_number,
-        call_type=CALL_DIRECT,
-    )
-    db.add(call)
-    db.commit()
-    db.refresh(call)
-    return call
+        counter.current_number = ticket_number
+        call = CallLog(
+            store_id=store_id,
+            service_type=service_type,
+            round_no=counter.round_no,
+            ticket_number=ticket_number,
+            call_type=CALL_DIRECT,
+        )
+        db.add(call)
+        db.commit()
+        db.refresh(call)
+        return call
 
 
 def reset_service(db: Session, store_id: int, service_type: str) -> ServiceCounter:
     validate_service_type(service_type)
-    counter = get_or_create_counter(db, store_id, service_type)
-    old_round_no = counter.round_no
-    db.query(Ticket).filter(
-        Ticket.store_id == store_id,
-        Ticket.service_type == service_type,
-        Ticket.round_no == old_round_no,
-        Ticket.status.in_(["waiting", "called"]),
-    ).update({Ticket.status: "reset"}, synchronize_session=False)
+    with _counter_lock_for(store_id, service_type):
+        counter = get_or_create_counter(db, store_id, service_type, lock=True)
+        old_round_no = counter.round_no
+        db.query(Ticket).filter(
+            Ticket.store_id == store_id,
+            Ticket.service_type == service_type,
+            Ticket.round_no == old_round_no,
+            Ticket.status.in_(["waiting", "called"]),
+        ).update({Ticket.status: "reset"}, synchronize_session=False)
 
-    counter.next_number = 1
-    counter.current_number = None
-    counter.round_no = old_round_no + 1
-    call = CallLog(
-        store_id=store_id,
-        service_type=service_type,
-        round_no=counter.round_no,
-        ticket_number=None,
-        call_type=CALL_RESET,
-    )
-    db.add(call)
-    db.commit()
-    db.refresh(counter)
-    return counter
+        counter.next_number = 1
+        counter.current_number = None
+        counter.round_no = old_round_no + 1
+        call = CallLog(
+            store_id=store_id,
+            service_type=service_type,
+            round_no=counter.round_no,
+            ticket_number=None,
+            call_type=CALL_RESET,
+        )
+        db.add(call)
+        db.commit()
+        db.refresh(counter)
+        return counter
 
 
 def get_waiting_tickets(db: Session, store_id: int, service_type: str, round_no: int, limit: int = 20) -> list[Ticket]:

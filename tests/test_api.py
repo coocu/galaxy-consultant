@@ -21,8 +21,8 @@ def client():
     })
     with TestClient(app) as test_client:
         db = app.state.SessionLocal()
-        db.add(Store(name="간단서비스 코너"))
-        db.add(Store(name="구매상담 코너"))
+        db.add(Store(name="간단서비스 코너", code="SIMPLE01"))
+        db.add(Store(name="구매상담 코너", code="BUY01"))
         db.commit()
         db.close()
         login_response = test_client.post("/api/admin/login", json={"key": "test-key"})
@@ -39,20 +39,40 @@ def test_store_search_create_update_delete(client):
     assert search_response.status_code == 200
     assert [store["name"] for store in search_response.json()["stores"]] == ["간단서비스 코너"]
 
-    create_response = client.post("/api/admin/stores", json={"name": "동해점"}, headers=auth_headers())
+    create_response = client.post("/api/admin/stores", json={"name": "동해점", "code": "DH001"}, headers=auth_headers())
     assert create_response.status_code == 201
     created = create_response.json()["store"]
     assert created["name"] == "동해점"
+    assert created["code"] == "DH001"
 
-    update_response = client.put(f"/api/admin/stores/{created['id']}", json={"name": "동해 센터"}, headers=auth_headers())
+    update_response = client.put(f"/api/admin/stores/{created['id']}", json={"name": "동해 센터", "code": "DH002"}, headers=auth_headers())
     assert update_response.status_code == 200
     assert update_response.json()["store"]["name"] == "동해 센터"
+    assert update_response.json()["store"]["code"] == "DH002"
 
     delete_response = client.delete(f"/api/admin/stores/{created['id']}", headers=auth_headers())
     assert delete_response.status_code == 200
 
     customer_search = client.get("/api/stores?search=동해")
     assert customer_search.json()["stores"] == []
+
+
+def test_store_code_lookup_and_duplicate_code_validation(client):
+    lookup_response = client.get("/api/stores/by-code/simple01")
+    assert lookup_response.status_code == 200
+    assert lookup_response.json()["store"]["name"] == "간단서비스 코너"
+    assert lookup_response.json()["store"]["code"] == "SIMPLE01"
+
+    duplicate_response = client.post(
+        "/api/admin/stores",
+        json={"name": "중복점", "code": "simple01"},
+        headers=auth_headers(),
+    )
+    assert duplicate_response.status_code == 400
+    assert duplicate_response.json()["detail"] == "이미 등록된 점코드입니다"
+
+    missing_response = client.get("/api/stores/by-code/not-exist")
+    assert missing_response.status_code == 404
 
 
 def test_ticket_call_and_state_api(client):
@@ -77,7 +97,7 @@ def test_ticket_call_and_state_api(client):
 
 
 def test_backup_zip_and_restore_roundtrip(client):
-    create_response = client.post("/api/admin/stores", json={"name": "백업매장"}, headers=auth_headers())
+    create_response = client.post("/api/admin/stores", json={"name": "백업매장", "code": "BACK01"}, headers=auth_headers())
     assert create_response.status_code == 201
 
     backup_response = client.get("/api/admin/backup", headers=auth_headers())
@@ -96,7 +116,9 @@ def test_backup_zip_and_restore_roundtrip(client):
         headers=auth_headers(),
     )
     assert restore_response.status_code == 200
-    assert client.get("/api/stores?search=백업매장").json()["stores"][0]["name"] == "백업매장"
+    restored_store = client.get("/api/stores?search=BACK01").json()["stores"][0]
+    assert restored_store["name"] == "백업매장"
+    assert restored_store["code"] == "BACK01"
 
 
 def test_backup_contains_only_store_categories(client):

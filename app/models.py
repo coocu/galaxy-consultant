@@ -19,6 +19,7 @@ class Store(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    code: Mapped[str | None] = mapped_column(String(40), nullable=True, unique=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now, onupdate=utc_now)

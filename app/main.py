@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import inspect, or_, select, text
 from sqlalchemy.orm import Session
 
 from .backup import make_backup_zip, restore_from_zip_bytes
@@ -61,10 +61,12 @@ class LoginBody(BaseModel):
 
 class StoreCreateBody(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    code: str | None = Field(default=None, max_length=40)
 
 
 class StoreUpdateBody(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    code: str | None = Field(default=None, max_length=40)
     is_active: bool | None = None
 
 
@@ -135,13 +137,40 @@ def api_error(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def normalize_store_code(code: str | None) -> str | None:
+    normalized = (code or "").strip().upper()
+    if not normalized:
+        return None
+    return normalized
+
+
+def ensure_store_code_unique(db: Session, code: str, exclude_store_id: int | None = None) -> None:
+    query = select(Store).where(Store.code == code)
+    if exclude_store_id is not None:
+        query = query.where(Store.id != exclude_store_id)
+    existing = db.execute(query.limit(1)).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=400, detail="이미 등록된 점코드입니다")
+
+
+def ensure_store_code_schema(engine) -> None:
+    inspector = inspect(engine)
+    if "stores" not in inspector.get_table_names():
+        return
+    column_names = {column["name"] for column in inspector.get_columns("stores")}
+    with engine.begin() as connection:
+        if "code" not in column_names:
+            connection.execute(text("ALTER TABLE stores ADD COLUMN code VARCHAR(40)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_stores_code ON stores (code)"))
+
+
 def seed_default_stores(db: Session, settings: Settings) -> None:
     if not settings.seed_default_stores:
         return
     exists = db.execute(select(Store.id).limit(1)).scalar_one_or_none()
     if exists is not None:
         return
-    db.add(Store(name="기본 매장"))
+    db.add(Store(name="기본 매장", code=None))
     db.commit()
 
 
@@ -216,6 +245,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         Base.metadata.create_all(bind=engine)
+        ensure_store_code_schema(engine)
         db = session_local()
         try:
             seed_default_stores(db, settings)
@@ -271,9 +301,22 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     def list_customer_stores(search: str = "", db: Session = Depends(get_db)) -> dict[str, object]:
         query = select(Store).where(Store.is_active.is_(True))
         if search.strip():
-            query = query.where(Store.name.ilike(f"%{search.strip()}%"))
+            keyword = f"%{search.strip()}%"
+            query = query.where(or_(Store.name.ilike(keyword), Store.code.ilike(keyword)))
         stores = db.execute(query.order_by(Store.name.asc())).scalars().all()
         return {"stores": [store_to_dict(store) for store in stores]}
+
+    @app.get("/api/stores/by-code/{store_code}")
+    def get_store_by_code(store_code: str, db: Session = Depends(get_db)) -> dict[str, object]:
+        code = normalize_store_code(store_code)
+        if code is None:
+            raise HTTPException(status_code=400, detail="점코드를 입력하세요")
+        store = db.execute(
+            select(Store).where(Store.code == code, Store.is_active.is_(True))
+        ).scalar_one_or_none()
+        if store is None:
+            raise HTTPException(status_code=404, detail="등록되지 않은 점코드입니다")
+        return {"store": store_to_dict(store)}
 
     @app.get("/api/admin/status")
     def admin_status(request: Request) -> dict[str, object]:
@@ -300,16 +343,21 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     def list_admin_stores(search: str = "", db: Session = Depends(get_db)) -> dict[str, object]:
         query = select(Store)
         if search.strip():
-            query = query.where(Store.name.ilike(f"%{search.strip()}%"))
+            keyword = f"%{search.strip()}%"
+            query = query.where(or_(Store.name.ilike(keyword), Store.code.ilike(keyword)))
         stores = db.execute(query.order_by(Store.is_active.desc(), Store.name.asc())).scalars().all()
         return {"stores": [store_to_dict(store) for store in stores]}
 
     @app.post("/api/admin/stores", status_code=201, dependencies=[Depends(require_admin)])
     def create_store(body: StoreCreateBody, db: Session = Depends(get_db)) -> dict[str, object]:
         name = body.name.strip()
+        code = normalize_store_code(body.code)
         if not name:
             raise HTTPException(status_code=400, detail="매장명을 입력하세요")
-        store = Store(name=name, is_active=True)
+        if code is None:
+            raise HTTPException(status_code=400, detail="점코드를 입력하세요")
+        ensure_store_code_unique(db, code)
+        store = Store(name=name, code=code, is_active=True)
         db.add(store)
         db.commit()
         db.refresh(store)
@@ -325,6 +373,12 @@ def create_app(test_config: dict | None = None) -> FastAPI:
             if not name:
                 raise HTTPException(status_code=400, detail="매장명을 입력하세요")
             store.name = name
+        if body.code is not None:
+            code = normalize_store_code(body.code)
+            if code is None:
+                raise HTTPException(status_code=400, detail="점코드를 입력하세요")
+            ensure_store_code_unique(db, code, exclude_store_id=store_id)
+            store.code = code
         if body.is_active is not None:
             store.is_active = body.is_active
         db.commit()

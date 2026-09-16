@@ -168,6 +168,7 @@ function renderStoreList(stores, actionName) {
   return stores.map((store) => `
     <button class="store-item" type="button" data-action="${actionName}" data-store-id="${store.id}">
       <span class="store-name">${escapeHtml(store.name)}</span>
+      ${store.code ? `<span class="store-code">점코드 ${escapeHtml(store.code)}</span>` : ""}
       <span class="store-status">${store.is_active ? "사용 가능" : "비활성"}</span>
     </button>
   `).join("");
@@ -253,7 +254,7 @@ function renderCustomer() {
       ${headerHtml("고객", "매장을 검색하고 선택하세요.", actions)}
       <section class="layout-card">
         <div class="search-row">
-          <input id="customerSearch" class="input" value="${escapeHtml(appState.customerSearch)}" placeholder="매장명 검색" />
+          <input id="customerSearch" class="input" value="${escapeHtml(appState.customerSearch)}" placeholder="매장명 또는 점코드 검색" />
           <button class="btn btn-primary" data-action="customerSearch">검색</button>
         </div>
         <div class="store-list">${renderStoreList(appState.customerStores, "selectCustomerStore")}</div>
@@ -353,7 +354,7 @@ function renderAdmin() {
       )}
       <section class="layout-card">
         <div class="search-row">
-          <input id="adminStoreSearch" class="input" value="${escapeHtml(appState.adminSearch)}" placeholder="매장명 검색" />
+          <input id="adminStoreSearch" class="input" value="${escapeHtml(appState.adminSearch)}" placeholder="매장명 또는 점코드 검색" />
           <button class="btn btn-primary" data-action="adminStoreSearch">검색</button>
         </div>
         <div class="store-list">${renderStoreList(appState.adminStores.filter((store) => store.is_active), "selectAdminStore")}</div>
@@ -609,11 +610,12 @@ function renderManageContent() {
 
     <div class="manage-row mt-3">
       <input id="addStoreName" class="input" placeholder="새 매장명" />
+      <input id="addStoreCode" class="input" placeholder="점코드" />
       <button class="btn btn-primary" data-action="addStore">매장 생성</button>
     </div>
 
     <div class="manage-row">
-      <input id="manageSearch" class="input" value="${escapeHtml(appState.manageSearch)}" placeholder="매장 검색" />
+      <input id="manageSearch" class="input" value="${escapeHtml(appState.manageSearch)}" placeholder="매장명 또는 점코드 검색" />
       <button class="btn btn-ghost" data-action="searchManage">검색</button>
     </div>
 
@@ -636,6 +638,7 @@ function renderManageStoreRow(store) {
     <div class="manage-store">
       <div>
         <div class="store-name">${escapeHtml(store.name)}</div>
+        <div class="store-code">점코드 ${escapeHtml(store.code || "미등록")}</div>
         <div class="store-status">${store.is_active ? "사용중" : "비활성"}</div>
       </div>
       <div class="manage-actions">
@@ -655,7 +658,7 @@ function renderDisplay() {
       ${headerHtml("고객 호출 화면", "매장을 검색하고 선택하세요.", `<button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`)}
       <section class="layout-card">
         <div class="search-row">
-          <input id="displaySearch" class="input" value="${escapeHtml(appState.customerSearch)}" placeholder="매장명 검색" />
+          <input id="displaySearch" class="input" value="${escapeHtml(appState.customerSearch)}" placeholder="매장명 또는 점코드 검색" />
           <button class="btn btn-primary" data-action="displaySearch">검색</button>
         </div>
         <div class="store-list">${renderStoreList(appState.customerStores, "selectDisplayStore")}</div>
@@ -832,13 +835,19 @@ async function resetSelectedService(serviceType) {
 }
 
 async function addStore() {
-  const input = document.getElementById("addStoreName");
-  const name = input?.value.trim();
+  const nameInput = document.getElementById("addStoreName");
+  const codeInput = document.getElementById("addStoreCode");
+  const name = nameInput?.value.trim();
+  const code = codeInput?.value.trim();
   if (!name) {
     alert("매장명을 입력하세요");
     return;
   }
-  await apiFetch("/api/admin/stores", { method: "POST", admin: true, json: { name } });
+  if (!code) {
+    alert("점코드를 입력하세요");
+    return;
+  }
+  await apiFetch("/api/admin/stores", { method: "POST", admin: true, json: { name, code } });
   appState.manageSearch = "";
   appState.adminSearch = "";
   await loadAdminStores();
@@ -855,7 +864,14 @@ async function editStore(storeId) {
     alert("매장명을 입력하세요");
     return;
   }
-  const payload = await apiFetch(`/api/admin/stores/${storeId}`, { method: "PUT", admin: true, json: { name: trimmed } });
+  const code = window.prompt("수정할 점코드를 입력하세요", store.code || "");
+  if (code === null) return;
+  const trimmedCode = code.trim();
+  if (!trimmedCode) {
+    alert("점코드를 입력하세요");
+    return;
+  }
+  const payload = await apiFetch(`/api/admin/stores/${storeId}`, { method: "PUT", admin: true, json: { name: trimmed, code: trimmedCode } });
   if (appState.selectedAdminStore?.id === storeId) {
     appState.selectedAdminStore = payload.store;
   }

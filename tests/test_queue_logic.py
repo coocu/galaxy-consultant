@@ -24,7 +24,7 @@ def app_and_store():
     })
     with TestClient(app):
         db = app.state.SessionLocal()
-        store = Store(name="이천점")
+        store = Store(name="이천점", code="IC100")
         db.add(store)
         db.commit()
         db.refresh(store)
@@ -105,3 +105,43 @@ def test_deleted_store_state_keeps_inactive_flag(app_and_store):
     state = get_store_state(db, store_id)
     assert state["store"]["is_active"] is False
     db.close()
+
+
+def test_concurrent_kiosks_issue_continuous_numbers(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    database_path = tmp_path / "multi_kiosk.db"
+    app = create_app({
+        "TESTING": True,
+        "DATABASE_URL": f"sqlite:///{database_path}",
+        "SEED_DEFAULT_STORES": False,
+    })
+
+    with TestClient(app):
+        db = app.state.SessionLocal()
+        store = Store(name="동탄점", code="Z399")
+        db.add(store)
+        db.commit()
+        db.refresh(store)
+        store_id = store.id
+        db.close()
+
+        def issue_one_ticket():
+            session = app.state.SessionLocal()
+            try:
+                ticket = issue_ticket(session, store_id, SERVICE_SIMPLE)
+                return ticket.ticket_number
+            finally:
+                session.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            issued_numbers = list(pool.map(lambda _index: issue_one_ticket(), range(20)))
+
+        assert sorted(issued_numbers) == list(range(1, 21))
+
+        db = app.state.SessionLocal()
+        state = get_store_state(db, store_id)
+        db.close()
+
+        assert state["services"][SERVICE_SIMPLE]["waiting_count"] == 20
+        assert state["services"][SERVICE_SIMPLE]["next_number"] == 21
