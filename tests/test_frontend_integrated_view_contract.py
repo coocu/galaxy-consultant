@@ -73,3 +73,20 @@ def test_admin_gear_stays_in_top_right_on_mobile():
     assert '"admin-topbar"' in app_js
     assert '.topbar.admin-topbar' in style_css
     assert '.topbar.admin-topbar .admin-header-actions' in style_css
+
+
+def test_admin_foreground_ticket_alert_is_present():
+    app_js = read_asset("app/static/js/app.js")
+
+    assert 'adminTicketSnapshot: {}' in app_js
+    assert 'function handleAdminTicketAlerts(nextState, { initial = false } = {})' in app_js
+    assert 'playAdminTicketSound();' in app_js
+    assert 'showAdminBrowserNotification(newestTicket, message);' in app_js
+    assert 'setPolling(() => loadAdminState({ initial: false }), 2000)' in app_js
+
+
+def test_service_worker_notification_requests_sound_and_vibration():
+    sw_js = read_asset("app/static/sw.js")
+
+    assert 'silent: false' in sw_js
+    assert 'vibrate: payload.vibrate || [160, 80, 160]' in sw_js

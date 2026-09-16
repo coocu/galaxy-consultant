@@ -31,6 +31,11 @@ const appState = {
   pushSubscribed: false,
   pushBusy: false,
   pushMessage: "",
+  adminTicketSnapshot: {},
+  adminTicketSnapshotReady: false,
+  adminForegroundNotice: "",
+  adminForegroundNoticeTimer: null,
+  adminAudioContext: null,
   lastCustomerCallId: 0,
   lastDisplayCallId: 0,
   pollingTimer: null,
@@ -512,8 +517,135 @@ function renderPushControl(compact = true) {
 }
 
 function renderPushNotice() {
-  if (!appState.selectedAdminStore || !appState.pushMessage) return "";
-  return `<div class="notice mt-1">${escapeHtml(appState.pushMessage)}</div>`;
+  if (!appState.selectedAdminStore) return "";
+  const messages = [appState.pushMessage, appState.adminForegroundNotice].filter(Boolean);
+  if (!messages.length) return "";
+  return `<div class="notice mt-1">${messages.map((message) => escapeHtml(message)).join("<br>")}</div>`;
+}
+
+function resetAdminTicketSnapshot() {
+  appState.adminTicketSnapshot = {};
+  appState.adminTicketSnapshotReady = false;
+  appState.adminForegroundNotice = "";
+  if (appState.adminForegroundNoticeTimer) {
+    window.clearTimeout(appState.adminForegroundNoticeTimer);
+    appState.adminForegroundNoticeTimer = null;
+  }
+}
+
+function maxWaitingTicketId(state, serviceType) {
+  const tickets = state?.services?.[serviceType]?.waiting_tickets || [];
+  return tickets.reduce((maxId, ticket) => Math.max(maxId, Number(ticket.id || 0)), 0);
+}
+
+function primeAdminAudio() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return null;
+  if (!appState.adminAudioContext) {
+    appState.adminAudioContext = new AudioContextClass();
+  }
+  if (appState.adminAudioContext.state === "suspended") {
+    appState.adminAudioContext.resume().catch(() => null);
+  }
+  return appState.adminAudioContext;
+}
+
+function playAdminTicketSound() {
+  try {
+    const context = primeAdminAudio();
+    if (!context) {
+      speak("새 번호표가 발급되었습니다.");
+      return;
+    }
+
+    const start = context.currentTime;
+    [0, 0.18].forEach((offset, index) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(index === 0 ? 880 : 1046, start + offset);
+      gain.gain.setValueAtTime(0.0001, start + offset);
+      gain.gain.exponentialRampToValueAtTime(0.2, start + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + offset + 0.15);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(start + offset);
+      oscillator.stop(start + offset + 0.16);
+    });
+  } catch (_error) {
+    speak("새 번호표가 발급되었습니다.");
+  }
+}
+
+function showAdminBrowserNotification(ticket, message) {
+  if (!document.hidden || !("Notification" in window) || Notification.permission !== "granted") return;
+  const options = {
+    body: message,
+    tag: `foreground-ticket-${ticket.store_id}-${ticket.service_type}`,
+    renotify: true,
+    silent: false,
+    vibrate: [160, 80, 160],
+    data: {
+      url: `/admin?store_id=${ticket.store_id}&service_type=${ticket.service_type}`,
+      store_id: ticket.store_id,
+      service_type: ticket.service_type,
+      ticket_number: ticket.ticket_number,
+    },
+  };
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.getRegistration("/")
+      .then((registration) => registration?.showNotification("새 대기번호 발급", options))
+      .catch(() => null);
+    return;
+  }
+
+  try {
+    new Notification("새 대기번호 발급", options);
+  } catch (_error) {
+
+  }
+}
+
+function handleAdminTicketAlerts(nextState, { initial = false } = {}) {
+  const nextSnapshot = {};
+  const newTickets = [];
+
+  for (const serviceType of SERVICE_ORDER) {
+    const tickets = nextState?.services?.[serviceType]?.waiting_tickets || [];
+    const previousMaxId = Number(appState.adminTicketSnapshot[serviceType] || 0);
+    for (const ticket of tickets) {
+      const ticketId = Number(ticket.id || 0);
+      if (appState.adminTicketSnapshotReady && !initial && ticketId > previousMaxId) {
+        newTickets.push(ticket);
+      }
+    }
+    nextSnapshot[serviceType] = Math.max(previousMaxId, maxWaitingTicketId(nextState, serviceType));
+  }
+
+  appState.adminTicketSnapshot = nextSnapshot;
+  appState.adminTicketSnapshotReady = true;
+
+  if (!newTickets.length) return;
+
+  const newestTicket = newTickets[newTickets.length - 1];
+  const meta = serviceMeta(newestTicket.service_type);
+  const storeName = appState.selectedAdminStore?.name || nextState?.store?.name || "선택 매장";
+  const message = `${storeName} · ${meta.customer_label} ${newestTicket.ticket_number}번 번호표가 발급되었습니다.`;
+  appState.adminForegroundNotice = message;
+  playAdminTicketSound();
+  showAdminBrowserNotification(newestTicket, message);
+
+  if (appState.adminForegroundNoticeTimer) {
+    window.clearTimeout(appState.adminForegroundNoticeTimer);
+  }
+  appState.adminForegroundNoticeTimer = window.setTimeout(() => {
+    appState.adminForegroundNotice = "";
+    appState.adminForegroundNoticeTimer = null;
+    if (appState.route === "/admin" && appState.selectedAdminStore) {
+      renderAdmin();
+    }
+  }, 5000);
 }
 
 function urlBase64ToUint8Array(base64String) {
@@ -767,11 +899,12 @@ async function loadAdminStores() {
   appState.adminStores = payload.stores;
 }
 
-async function loadAdminState() {
+async function loadAdminState(options = {}) {
   if (!appState.selectedAdminStore) return;
   const payload = await apiFetch(`/api/state/${appState.selectedAdminStore.id}`);
   appState.adminState = payload.state;
   appState.selectedAdminStore = payload.state.store;
+  handleAdminTicketAlerts(payload.state, { initial: options.initial === true });
   renderAdmin();
 }
 
@@ -1151,6 +1284,9 @@ $app.addEventListener("click", (event) => {
   const callType = target.dataset.callType;
   const scope = target.dataset.scope;
 
+  if (appState.route === "/admin") {
+    primeAdminAudio();
+  }
 
   if (action === "openAdminSettings") {
     appState.adminSettingsOpen = true;
@@ -1243,6 +1379,7 @@ $app.addEventListener("click", (event) => {
       appState.adminState = null;
       appState.pushSubscribed = false;
       appState.pushMessage = "";
+      resetAdminTicketSnapshot();
       renderAdmin();
     });
   }
@@ -1257,9 +1394,11 @@ $app.addEventListener("click", (event) => {
     appState.adminSettingsOpen = false;
     appState.selectedAdminStore = appState.adminStores.find((store) => store.id === storeId) || null;
     appState.selectedAdminService = null;
+    resetAdminTicketSnapshot();
     safeRun(async () => {
-      await loadAdminState();
+      await loadAdminState({ initial: true });
       await syncExistingPushToSelectedStore();
+      setPolling(() => loadAdminState({ initial: false }), 2000);
       renderAdmin();
     });
   }
@@ -1268,16 +1407,18 @@ $app.addEventListener("click", (event) => {
     appState.adminSettingsOpen = false;
     appState.selectedAdminService = serviceType;
     safeRun(async () => {
-      await loadAdminState();
-      setPolling(loadAdminState, 1500);
+      await loadAdminState({ initial: false });
+      setPolling(() => loadAdminState({ initial: false }), 2000);
     });
   }
 
   if (action === "changeAdminService") {
     appState.adminSettingsOpen = false;
-    clearPolling();
     appState.selectedAdminService = null;
     renderAdmin();
+    if (appState.selectedAdminStore) {
+      setPolling(() => loadAdminState({ initial: false }), 2000);
+    }
   }
 
   if (action === "changeAdminStore") {
@@ -1287,6 +1428,7 @@ $app.addEventListener("click", (event) => {
     appState.selectedAdminService = null;
     appState.adminState = null;
     appState.pushMessage = "";
+    resetAdminTicketSnapshot();
     renderAdmin();
   }
 
@@ -1330,8 +1472,8 @@ $app.addEventListener("click", (event) => {
     appState.modalOpen = false;
     appState.managementUnlocked = false;
     renderAdmin();
-    if (appState.selectedAdminStore && appState.selectedAdminService) {
-      setPolling(loadAdminState, 1500);
+    if (appState.selectedAdminStore) {
+      setPolling(() => loadAdminState({ initial: false }), 2000);
     }
   }
 

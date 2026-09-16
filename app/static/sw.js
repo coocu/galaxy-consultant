@@ -13,6 +13,8 @@ self.addEventListener("push", (event) => {
     renotify: payload.renotify !== false,
     data: payload.data || {},
     requireInteraction: false,
+    silent: false,
+    vibrate: payload.vibrate || [160, 80, 160],
   };
 
   event.waitUntil(self.registration.showNotification(title, options));
