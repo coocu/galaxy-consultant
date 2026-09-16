@@ -32,7 +32,7 @@ self.addEventListener("notificationclick", (event) => {
             return client.navigate(expectedUrl.href);
           }
         } catch (_error) {
-          // 다음 클라이언트를 확인한다.
+
         }
       }
       return clients.openWindow(targetUrl);

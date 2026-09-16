@@ -420,8 +420,8 @@ function renderAdmin() {
     ? `${appState.selectedAdminStore.name} · 통합보기`
     : `${appState.selectedAdminStore.name} · ${serviceMeta(appState.selectedAdminService).admin_label}`;
   const selectedAdminSubtitle = isIntegratedAdmin
-    ? "갤럭시 컨설턴트와 구매상담을 함께 호출합니다."
-    : "선택한 업무만 호출합니다.";
+    ? "방문해 주셔서 감사합니다."
+    : "방문해 주셔서 감사합니다.";
   const customerUrl = `/customer?store_id=${appState.selectedAdminStore.id}&service_type=${appState.selectedAdminService}`;
   $app.innerHTML = `
     ${headerHtml(
