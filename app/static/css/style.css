@@ -100,6 +100,9 @@ a { color: inherit; text-decoration: none; }
   align-items: center;
   justify-content: center;
   gap: 8px;
+  white-space: nowrap;
+  word-break: keep-all;
+  flex: 0 0 auto;
 }
 
 .btn:active { transform: scale(.985); }
@@ -133,6 +136,20 @@ a { color: inherit; text-decoration: none; }
   align-items: center;
   margin-bottom: 16px;
 }
+.search-row .btn,
+.manage-row .btn {
+  min-width: 108px;
+  padding-left: 24px;
+  padding-right: 24px;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+.modal .search-row .btn,
+.modal .manage-row .btn {
+  min-width: 108px;
+}
+
 
 .input {
   width: 100%;
@@ -440,8 +457,9 @@ a { color: inherit; text-decoration: none; }
   .topbar.viewer-topbar .admin-header-actions, .topbar.admin-topbar .admin-header-actions { width: auto; justify-content: flex-end; }
   .topbar.viewer-topbar .btn, .topbar.admin-topbar .btn { width: auto; }
   .btn { width: 100%; }
-  .topbar.viewer-topbar .btn, .topbar.viewer-topbar .viewer-gear, .topbar.admin-topbar .btn, .topbar.admin-topbar .viewer-gear { width: 50px; }
+  .topbar.viewer-topbar .viewer-gear, .topbar.admin-topbar .viewer-gear { width: 50px; }
   .search-row, .manage-row, .manage-store { grid-template-columns: 1fr; display: grid; }
+  .search-row .btn, .manage-row .btn { width: 100%; min-width: 0; }
   .store-item { align-items: flex-start; flex-direction: column; }
   .service-head { align-items: flex-start; flex-direction: column; }
   .state-mini { grid-template-columns: 1fr; }
