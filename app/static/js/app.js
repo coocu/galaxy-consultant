@@ -1,4 +1,5 @@
 const SERVICE_ORDER = ["simple_service", "purchase_consult"];
+const INTEGRATED_SERVICE = "integrated";
 const SERVICE_META = window.SERVICE_META || {};
 const VOICE_STORAGE = "codenote_staff_call_voice_enabled";
 const POPUP_VISIBLE_MS = 5000;
@@ -22,6 +23,7 @@ const appState = {
   displayState: null,
   adminAuthenticated: false,
   modalOpen: false,
+  viewerSettingsOpen: null,
   managementUnlocked: false,
   voiceEnabled: localStorage.getItem(VOICE_STORAGE) !== "0",
   pushSupported: false,
@@ -65,6 +67,15 @@ function serviceMeta(serviceType) {
 
 function validServiceType(serviceType) {
   return SERVICE_ORDER.includes(serviceType) ? serviceType : null;
+}
+
+function validCustomerViewType(serviceType) {
+  if (serviceType === INTEGRATED_SERVICE) return INTEGRATED_SERVICE;
+  return validServiceType(serviceType);
+}
+
+function isIntegratedView(serviceType) {
+  return serviceType === INTEGRATED_SERVICE;
 }
 
 function nowLabel() {
@@ -121,9 +132,10 @@ function go(path) {
   window.location.href = path;
 }
 
-function headerHtml(title, subtitle = "", actions = "") {
+function headerHtml(title, subtitle = "", actions = "", extraClass = "") {
+  const className = extraClass ? `topbar ${extraClass}` : "topbar";
   return `
-    <header class="topbar">
+    <header class="${className}">
       <div>
         <h1 class="brand-title">${escapeHtml(title)}</h1>
         ${subtitle ? `<p class="sub-title">${escapeHtml(subtitle)}</p>` : ""}
@@ -163,21 +175,73 @@ function renderStoreList(stores, actionName) {
 
 function renderServiceChoice(mode, selectedStore) {
   const title = mode === "admin" ? "관리할 업무를 선택하세요." : "업무를 선택하세요.";
+  const action = mode === "admin" ? "selectAdminService" : mode === "display" ? "selectDisplayService" : "selectCustomerService";
+  const serviceButtons = SERVICE_ORDER.map((serviceType) => {
+    const meta = serviceMeta(serviceType);
+    const label = mode === "admin" ? meta.admin_label : meta.customer_label;
+    const buttonClass = meta.theme === "red" ? "btn-red" : "btn-primary";
+    return `<button class="btn ${buttonClass}" data-action="${action}" data-service="${serviceType}">${escapeHtml(label)}</button>`;
+  });
+
+  if (mode !== "admin") {
+    serviceButtons.push(`<button class="btn btn-green" data-action="${action}" data-service="${INTEGRATED_SERVICE}">통합보기</button>`);
+  }
+
   return `
     <section class="layout-card">
       <h2 class="section-title">${escapeHtml(selectedStore.name)}</h2>
       <p class="sub-title">${title}</p>
       <div class="service-select">
-        ${SERVICE_ORDER.map((serviceType) => {
-          const meta = serviceMeta(serviceType);
-          const label = mode === "admin" ? meta.admin_label : meta.customer_label;
-          const action = mode === "admin" ? "selectAdminService" : mode === "display" ? "selectDisplayService" : "selectCustomerService";
-          const buttonClass = meta.theme === "red" ? "btn-red" : "btn-primary";
-          return `<button class="btn ${buttonClass}" data-action="${action}" data-service="${serviceType}">${escapeHtml(label)}</button>`;
-        }).join("")}
+        ${serviceButtons.join("")}
       </div>
     </section>
   `;
+}
+
+function renderViewerGear(scope) {
+  return `<button class="viewer-gear" type="button" data-action="openViewerSettings" data-scope="${scope}" aria-label="화면 설정">⚙</button>`;
+}
+
+function renderViewerSettingsModal(scope) {
+  if (appState.viewerSettingsOpen !== scope) return "";
+  const isDisplay = scope === "display";
+  const changeServiceAction = isDisplay ? "changeDisplayService" : "changeCustomerService";
+  const changeStoreAction = isDisplay ? "changeDisplayStore" : "changeCustomerStore";
+  return `
+    <div class="modal-backdrop" data-action="closeViewerSettings">
+      <section class="modal viewer-settings-modal" role="dialog" aria-modal="true" aria-label="화면 설정" data-action="stopModalClose">
+        <div class="modal-head">
+          <div class="modal-title">화면 설정</div>
+          <button class="close-btn" type="button" data-action="closeViewerSettings">×</button>
+        </div>
+        <div class="viewer-settings-actions">
+          <button class="btn btn-primary" type="button" data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button>
+          <button class="btn btn-ghost" type="button" data-action="${changeServiceAction}">업무 변경</button>
+          <button class="btn btn-ghost" type="button" data-action="${changeStoreAction}">매장 변경</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderViewerCallBody(scope, selectedService) {
+  if (isIntegratedView(selectedService)) {
+    return `
+      <section class="integrated-service-wrap mt-2">
+        ${SERVICE_ORDER.map((serviceType) => renderCustomerDisplayServiceCard(serviceType, scope)).join("")}
+      </section>
+    `;
+  }
+  return `
+    <section class="single-service-wrap mt-2">
+      ${renderCustomerDisplayServiceCard(selectedService, scope)}
+    </section>
+  `;
+}
+
+function selectedServiceMatchesCall(selectedService, callServiceType) {
+  if (isIntegratedView(selectedService)) return SERVICE_ORDER.includes(callServiceType);
+  return selectedService === callServiceType;
 }
 
 function renderCustomer() {
@@ -210,17 +274,24 @@ function renderCustomer() {
     return;
   }
 
-  const meta = serviceMeta(appState.selectedCustomerService);
+  const selectedService = appState.selectedCustomerService;
+  const title = isIntegratedView(selectedService)
+    ? `${selected.name} · 통합보기`
+    : `${selected.name} · ${serviceMeta(selectedService).customer_label}`;
+  const subtitle = isIntegratedView(selectedService)
+    ? "간단서비스와 구매문의를 함께 표시합니다."
+    : "관리자가 호출하면 이 화면 중앙에 크게 표시됩니다.";
+
   $app.innerHTML = `
     ${headerHtml(
-      `${selected.name} · ${meta.customer_label}`,
-      "관리자가 호출하면 이 화면 중앙에 크게 표시됩니다.",
-      `<button class="btn btn-primary btn-small" data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button><button class="btn btn-ghost btn-small" data-action="changeCustomerService">업무 변경</button><button class="btn btn-ghost btn-small" data-action="changeCustomerStore">매장 변경</button>`
+      title,
+      subtitle,
+      renderViewerGear("customer"),
+      "viewer-topbar"
     )}
-    ${appState.voiceEnabled ? "" : `<div class="notice mt-1">호출 음성은 이 화면에서 '음성 시작'을 한 번 눌러야 안정적으로 나옵니다.</div>`}
-    <section class="single-service-wrap mt-2">
-      ${renderCustomerDisplayServiceCard(appState.selectedCustomerService, "customer")}
-    </section>
+    ${appState.voiceEnabled ? "" : `<div class="notice mt-1">호출 음성은 오른쪽 상단 톱니바퀴에서 '음성 시작'을 한 번 눌러야 안정적으로 나옵니다.</div>`}
+    ${renderViewerCallBody("customer", selectedService)}
+    ${renderViewerSettingsModal("customer")}
   `;
 }
 
@@ -605,17 +676,24 @@ function renderDisplay() {
     return;
   }
 
-  const meta = serviceMeta(appState.selectedDisplayService);
+  const selectedService = appState.selectedDisplayService;
+  const title = isIntegratedView(selectedService)
+    ? `${selected.name} · 통합보기`
+    : `${selected.name} · ${serviceMeta(selectedService).customer_label}`;
+  const subtitle = isIntegratedView(selectedService)
+    ? "간단서비스와 구매문의를 함께 표시합니다."
+    : "관리자가 호출하면 이 화면 중앙에 크게 표시됩니다.";
+
   $app.innerHTML = `
     ${headerHtml(
-      `${selected.name} · ${meta.customer_label}`,
-      "관리자가 호출하면 이 화면 중앙에 크게 표시됩니다.",
-      `<button class="btn btn-primary btn-small" data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button><button class="btn btn-ghost btn-small" data-action="changeDisplayService">업무 변경</button><button class="btn btn-ghost btn-small" data-action="changeDisplayStore">매장 변경</button>`
+      title,
+      subtitle,
+      renderViewerGear("display"),
+      "viewer-topbar"
     )}
-    ${appState.voiceEnabled ? "" : `<div class="notice mt-1">브라우저 정책 때문에 호출 음성은 이 화면에서 '음성 시작'을 한 번 눌러야 안정적으로 나옵니다.</div>`}
-    <section class="single-service-wrap mt-2">
-      ${renderCustomerDisplayServiceCard(appState.selectedDisplayService, "display")}
-    </section>
+    ${appState.voiceEnabled ? "" : `<div class="notice mt-1">브라우저 정책 때문에 호출 음성은 오른쪽 상단 톱니바퀴에서 '음성 시작'을 한 번 눌러야 안정적으로 나옵니다.</div>`}
+    ${renderViewerCallBody("display", selectedService)}
+    ${renderViewerSettingsModal("display")}
   `;
 }
 
@@ -654,7 +732,7 @@ async function pollCustomerCalls() {
   if (payload.calls.length) {
     for (const call of payload.calls) {
       appState.lastCustomerCallId = Math.max(appState.lastCustomerCallId, call.id);
-      if (call.ticket_number && call.service_type === appState.selectedCustomerService) {
+      if (call.ticket_number && selectedServiceMatchesCall(appState.selectedCustomerService, call.service_type)) {
         registerVisibleCall("customer", call);
         showCallPopup(call, appState.voiceEnabled);
       }
@@ -680,7 +758,7 @@ async function pollDisplayCalls() {
   if (payload.calls.length) {
     for (const call of payload.calls) {
       appState.lastDisplayCallId = Math.max(appState.lastDisplayCallId, call.id);
-      if (call.ticket_number && call.service_type === appState.selectedDisplayService) {
+      if (call.ticket_number && selectedServiceMatchesCall(appState.selectedDisplayService, call.service_type)) {
         registerVisibleCall("display", call);
         showCallPopup(call, appState.voiceEnabled);
       }
@@ -929,7 +1007,7 @@ async function initCustomer() {
   clearPolling();
   const params = new URLSearchParams(window.location.search);
   const storeId = Number(params.get("store_id"));
-  const serviceType = validServiceType(params.get("service_type"));
+  const serviceType = validCustomerViewType(params.get("service_type"));
   await loadCustomerStores();
   if (storeId) {
     appState.selectedCustomerStore = appState.customerStores.find((store) => store.id === storeId) || { id: storeId, name: "고객 호출 화면", is_active: true };
@@ -962,7 +1040,7 @@ async function initDisplay() {
   clearPolling();
   const params = new URLSearchParams(window.location.search);
   const storeId = Number(params.get("store_id"));
-  const serviceType = validServiceType(params.get("service_type"));
+  const serviceType = validCustomerViewType(params.get("service_type"));
   await loadCustomerStores();
   if (storeId) {
     appState.selectedDisplayStore = appState.customerStores.find((store) => store.id === storeId) || { id: storeId, name: "고객 호출 화면", is_active: true };
@@ -998,6 +1076,30 @@ $app.addEventListener("click", (event) => {
   const storeId = Number(target.dataset.storeId);
   const serviceType = target.dataset.service;
   const callType = target.dataset.callType;
+  const scope = target.dataset.scope;
+
+
+  if (action === "openViewerSettings") {
+    appState.viewerSettingsOpen = scope === "display" ? "display" : "customer";
+    if (appState.route === "/display") {
+      renderDisplay();
+    } else {
+      renderCustomer();
+    }
+  }
+
+  if (action === "closeViewerSettings") {
+    appState.viewerSettingsOpen = null;
+    if (appState.route === "/display") {
+      renderDisplay();
+    } else {
+      renderCustomer();
+    }
+  }
+
+  if (action === "stopModalClose") {
+    event.stopPropagation();
+  }
 
   if (action === "customerSearch") {
     appState.customerSearch = document.getElementById("customerSearch")?.value.trim() || "";
@@ -1007,6 +1109,7 @@ $app.addEventListener("click", (event) => {
   if (action === "selectCustomerStore") {
     appState.selectedCustomerStore = appState.customerStores.find((store) => store.id === storeId) || null;
     appState.selectedCustomerService = null;
+    appState.viewerSettingsOpen = null;
     appState.customerState = null;
     appState.lastCustomerCallId = 0;
     safeRun(async () => {
@@ -1016,6 +1119,7 @@ $app.addEventListener("click", (event) => {
 
   if (action === "selectCustomerService") {
     appState.selectedCustomerService = serviceType;
+    appState.viewerSettingsOpen = null;
     safeRun(async () => {
       await loadCustomerDisplayState(true);
       setPolling(pollCustomerCalls, 1000);
@@ -1025,6 +1129,7 @@ $app.addEventListener("click", (event) => {
   if (action === "changeCustomerService") {
     clearPolling();
     appState.selectedCustomerService = null;
+    appState.viewerSettingsOpen = null;
     appState.lastCustomerCallId = appState.customerState?.last_call_id || 0;
     renderCustomer();
   }
@@ -1033,6 +1138,7 @@ $app.addEventListener("click", (event) => {
     clearPolling();
     appState.selectedCustomerStore = null;
     appState.selectedCustomerService = null;
+    appState.viewerSettingsOpen = null;
     appState.customerState = null;
     appState.lastCustomerCallId = 0;
     renderCustomer();
@@ -1189,6 +1295,7 @@ $app.addEventListener("click", (event) => {
   if (action === "selectDisplayStore") {
     appState.selectedDisplayStore = appState.customerStores.find((store) => store.id === storeId) || null;
     appState.selectedDisplayService = null;
+    appState.viewerSettingsOpen = null;
     appState.displayState = null;
     appState.lastDisplayCallId = 0;
     safeRun(async () => {
@@ -1198,6 +1305,7 @@ $app.addEventListener("click", (event) => {
 
   if (action === "selectDisplayService") {
     appState.selectedDisplayService = serviceType;
+    appState.viewerSettingsOpen = null;
     safeRun(async () => {
       await loadDisplayState(true);
       setPolling(pollDisplayCalls, 1000);
@@ -1207,6 +1315,7 @@ $app.addEventListener("click", (event) => {
   if (action === "changeDisplayService") {
     clearPolling();
     appState.selectedDisplayService = null;
+    appState.viewerSettingsOpen = null;
     appState.lastDisplayCallId = appState.displayState?.last_call_id || 0;
     renderDisplay();
   }
@@ -1215,6 +1324,7 @@ $app.addEventListener("click", (event) => {
     clearPolling();
     appState.selectedDisplayStore = null;
     appState.selectedDisplayService = null;
+    appState.viewerSettingsOpen = null;
     appState.displayState = null;
     appState.lastDisplayCallId = 0;
     renderDisplay();
@@ -1222,6 +1332,7 @@ $app.addEventListener("click", (event) => {
 
   if (action === "enableVoice") {
     appState.voiceEnabled = true;
+    appState.viewerSettingsOpen = null;
     localStorage.setItem(VOICE_STORAGE, "1");
     speak("호출 음성이 켜졌습니다.");
     if (appState.route === "/display") {
