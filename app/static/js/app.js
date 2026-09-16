@@ -596,7 +596,7 @@ function renderManageModal() {
 
 function renderManageUnlock() {
   return `
-    <p class="sub-title">매장 생성, 수정, 삭제, 백업, 복원은 인증키를 다시 입력해야 사용할 수 있습니다.</p>
+    <p class="sub-title">매장 관리는 kiosk가 포함된 인증키를 다시 입력해야 사용할 수 있습니다.</p>
     <div class="search-row mt-2">
       <input id="manageKey" class="input" type="password" placeholder="인증키 재입력" />
       <button class="btn btn-primary" data-action="unlockManage">확인</button>
@@ -606,7 +606,7 @@ function renderManageUnlock() {
 
 function renderManageContent() {
   return `
-    <div class="notice">삭제는 실제 데이터 삭제가 아니라 비활성화 처리입니다. 백업 ZIP은 매장 카테고리만 포함합니다.</div>
+    <div class="notice">삭제하면 매장 카테고리와 해당 매장의 대기번호 데이터가 삭제됩니다. 백업 ZIP은 매장 카테고리만 포함합니다.</div>
 
     <div class="manage-row mt-3">
       <input id="addStoreName" class="input" placeholder="새 매장명" />
@@ -643,9 +643,7 @@ function renderManageStoreRow(store) {
       </div>
       <div class="manage-actions">
         <button class="btn btn-ghost btn-small" data-action="editStore" data-store-id="${store.id}">수정</button>
-        ${store.is_active
-          ? `<button class="btn btn-danger btn-small" data-action="deleteStore" data-store-id="${store.id}">삭제</button>`
-          : `<button class="btn btn-primary btn-small" data-action="restoreStore" data-store-id="${store.id}">복구</button>`}
+        <button class="btn btn-danger btn-small" data-action="deleteStore" data-store-id="${store.id}">삭제</button>
       </div>
     </div>
   `;
@@ -1265,8 +1263,7 @@ $app.addEventListener("click", (event) => {
   if (action === "unlockManage") {
     const key = document.getElementById("manageKey")?.value.trim() || "";
     safeRun(async () => {
-      await apiFetch("/api/admin/login", { method: "POST", json: { key } });
-      appState.adminAuthenticated = true;
+      await apiFetch("/api/admin/manage/login", { method: "POST", json: { key } });
       appState.managementUnlocked = true;
       await loadAdminStores();
       renderAdmin();

@@ -53,6 +53,8 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 ADMIN_SESSION_COOKIE = "codenote_staff_call_admin_session"
 ADMIN_SESSION_SECONDS = 30 * 60
+MANAGE_SESSION_COOKIE = "codenote_staff_call_manage_session"
+MANAGE_SESSION_SECONDS = 10 * 60
 
 
 class LoginBody(BaseModel):
@@ -106,31 +108,52 @@ class PushUnsubscribeBody(BaseModel):
     endpoint: str = Field(min_length=1)
 
 
-def _cleanup_admin_sessions(app: FastAPI) -> None:
+def _cleanup_sessions(session_store: dict[str, float]) -> None:
     now = time.time()
-    expired = [token for token, expires_at in app.state.admin_sessions.items() if expires_at <= now]
+    expired = [token for token, expires_at in session_store.items() if expires_at <= now]
     for token in expired:
-        app.state.admin_sessions.pop(token, None)
+        session_store.pop(token, None)
 
 
 def _issue_admin_session(app: FastAPI) -> str:
     with app.state.admin_session_lock:
-        _cleanup_admin_sessions(app)
+        _cleanup_sessions(app.state.admin_sessions)
         token = secrets.token_urlsafe(32)
         app.state.admin_sessions[token] = time.time() + ADMIN_SESSION_SECONDS
+        return token
+
+
+def _issue_manage_session(app: FastAPI) -> str:
+    with app.state.manage_session_lock:
+        _cleanup_sessions(app.state.manage_sessions)
+        token = secrets.token_urlsafe(32)
+        app.state.manage_sessions[token] = time.time() + MANAGE_SESSION_SECONDS
         return token
 
 
 def _has_admin_session(request: Request) -> bool:
     token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
     with request.app.state.admin_session_lock:
-        _cleanup_admin_sessions(request.app)
+        _cleanup_sessions(request.app.state.admin_sessions)
         return bool(token and token in request.app.state.admin_sessions)
+
+
+def _has_manage_session(request: Request) -> bool:
+    token = request.cookies.get(MANAGE_SESSION_COOKIE, "")
+    with request.app.state.manage_session_lock:
+        _cleanup_sessions(request.app.state.manage_sessions)
+        return bool(token and token in request.app.state.manage_sessions)
 
 
 def require_admin(request: Request) -> None:
     if not _has_admin_session(request):
         raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다")
+
+
+def require_store_manager(request: Request) -> None:
+    require_admin(request)
+    if not _has_manage_session(request):
+        raise HTTPException(status_code=401, detail="매장 관리 인증이 필요합니다")
 
 
 def api_error(exc: ValueError) -> HTTPException:
@@ -223,12 +246,32 @@ def _verify_admin_key(app: FastAPI, code: str) -> None:
         raise HTTPException(status_code=401, detail="인증키가 올바르지 않습니다")
 
 
+def _verify_manage_key(app: FastAPI, code: str) -> None:
+    auth_key = (code or "").strip()
+    if "kiosk" not in auth_key.lower():
+        raise HTTPException(status_code=401, detail="매장 관리는 kiosk가 포함된 인증키만 사용할 수 있습니다")
+    _verify_admin_key(app, auth_key)
+
+
 def _set_admin_cookie(response: JSONResponse, request: Request, token: str) -> None:
     forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     response.set_cookie(
         ADMIN_SESSION_COOKIE,
         token,
         max_age=ADMIN_SESSION_SECONDS,
+        httponly=True,
+        secure=(not request.app.state.settings.testing and forwarded_proto == "https"),
+        samesite="lax",
+        path="/",
+    )
+
+
+def _set_manage_cookie(response: JSONResponse, request: Request, token: str) -> None:
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    response.set_cookie(
+        MANAGE_SESSION_COOKIE,
+        token,
+        max_age=MANAGE_SESSION_SECONDS,
         httponly=True,
         secure=(not request.app.state.settings.testing and forwarded_proto == "https"),
         samesite="lax",
@@ -259,6 +302,8 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     app.state.SessionLocal = session_local
     app.state.admin_sessions = {}
     app.state.admin_session_lock = threading.RLock()
+    app.state.manage_sessions = {}
+    app.state.manage_session_lock = threading.RLock()
     app.state.auth_checker = test_config.get("AUTH_CHECKER")
     app.state.push_sender = test_config.get("PUSH_SENDER")
 
@@ -335,8 +380,20 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
         with request.app.state.admin_session_lock:
             request.app.state.admin_sessions.pop(token, None)
+        manage_token = request.cookies.get(MANAGE_SESSION_COOKIE, "")
+        with request.app.state.manage_session_lock:
+            request.app.state.manage_sessions.pop(manage_token, None)
         response = JSONResponse({"ok": True})
         response.delete_cookie(ADMIN_SESSION_COOKIE, path="/")
+        response.delete_cookie(MANAGE_SESSION_COOKIE, path="/")
+        return response
+
+    @app.post("/api/admin/manage/login", dependencies=[Depends(require_admin)])
+    def manage_login(body: LoginBody, request: Request) -> JSONResponse:
+        _verify_manage_key(request.app, body.key)
+        token = _issue_manage_session(request.app)
+        response = JSONResponse({"ok": True, "message": "매장 관리 인증되었습니다"})
+        _set_manage_cookie(response, request, token)
         return response
 
     @app.get("/api/admin/stores", dependencies=[Depends(require_admin)])
@@ -348,7 +405,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         stores = db.execute(query.order_by(Store.is_active.desc(), Store.name.asc())).scalars().all()
         return {"stores": [store_to_dict(store) for store in stores]}
 
-    @app.post("/api/admin/stores", status_code=201, dependencies=[Depends(require_admin)])
+    @app.post("/api/admin/stores", status_code=201, dependencies=[Depends(require_store_manager)])
     def create_store(body: StoreCreateBody, db: Session = Depends(get_db)) -> dict[str, object]:
         name = body.name.strip()
         code = normalize_store_code(body.code)
@@ -363,7 +420,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         db.refresh(store)
         return {"store": store_to_dict(store)}
 
-    @app.put("/api/admin/stores/{store_id}", dependencies=[Depends(require_admin)])
+    @app.put("/api/admin/stores/{store_id}", dependencies=[Depends(require_store_manager)])
     def update_store(store_id: int, body: StoreUpdateBody, db: Session = Depends(get_db)) -> dict[str, object]:
         store = db.get(Store, store_id)
         if store is None:
@@ -385,15 +442,15 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         db.refresh(store)
         return {"store": store_to_dict(store)}
 
-    @app.delete("/api/admin/stores/{store_id}", dependencies=[Depends(require_admin)])
+    @app.delete("/api/admin/stores/{store_id}", dependencies=[Depends(require_store_manager)])
     def delete_store(store_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
         store = db.get(Store, store_id)
         if store is None:
             raise HTTPException(status_code=404, detail="매장을 찾을 수 없습니다")
-        store.is_active = False
+        deleted = store_to_dict(store)
+        db.delete(store)
         db.commit()
-        db.refresh(store)
-        return {"store": store_to_dict(store), "message": "매장이 비활성화되었습니다"}
+        return {"store": deleted, "message": "매장 카테고리가 삭제되었습니다"}
 
     @app.post("/api/tickets", status_code=201)
     def create_ticket(body: TicketCreateBody, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
@@ -476,7 +533,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
             raise api_error(exc) from exc
         return {"ok": True, "disabled": disabled}
 
-    @app.get("/api/admin/backup", dependencies=[Depends(require_admin)])
+    @app.get("/api/admin/backup", dependencies=[Depends(require_store_manager)])
     def backup(db: Session = Depends(get_db)) -> Response:
         content = make_backup_zip(db)
         filename = f"codenote_staff_call_backup_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.zip"
@@ -486,7 +543,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    @app.post("/api/admin/restore", dependencies=[Depends(require_admin)])
+    @app.post("/api/admin/restore", dependencies=[Depends(require_store_manager)])
     async def restore(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict[str, object]:
         if not file.filename.lower().endswith(".zip"):
             raise HTTPException(status_code=400, detail="ZIP 백업 파일만 업로드할 수 있습니다")

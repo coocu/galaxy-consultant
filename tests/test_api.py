@@ -16,7 +16,7 @@ def client():
         "DATABASE_URL": "sqlite:///:memory:",
         "SEED_DEFAULT_STORES": False,
         "AUTH_CHECKER": lambda code: {"status": "approved", "token": "test-token"}
-        if code == "test-key"
+        if code in {"test-key", "kiosk-test-key"}
         else {"status": "denied"},
     })
     with TestClient(app) as test_client:
@@ -27,11 +27,48 @@ def client():
         db.close()
         login_response = test_client.post("/api/admin/login", json={"key": "test-key"})
         assert login_response.status_code == 200
+        manage_response = test_client.post("/api/admin/manage/login", json={"key": "kiosk-test-key"})
+        assert manage_response.status_code == 200
         yield test_client
 
 
 def auth_headers():
     return {"X-Admin-Key": "test-key"}
+
+
+def test_store_management_requires_kiosk_key():
+    calls = []
+
+    def auth_checker(code: str):
+        calls.append(code)
+        if code in {"plain-admin-key", "kiosk-admin-key"}:
+            return {"status": "approved", "token": "server-token"}
+        return {"status": "denied"}
+
+    app = create_app({
+        "TESTING": True,
+        "DATABASE_URL": "sqlite:///:memory:",
+        "SEED_DEFAULT_STORES": False,
+        "AUTH_CHECKER": auth_checker,
+    })
+
+    with TestClient(app) as test_client:
+        login_response = test_client.post("/api/admin/login", json={"key": "plain-admin-key"})
+        assert login_response.status_code == 200
+
+        denied_manage = test_client.post("/api/admin/manage/login", json={"key": "plain-admin-key"})
+        assert denied_manage.status_code == 401
+        assert denied_manage.json()["detail"] == "매장 관리는 kiosk가 포함된 인증키만 사용할 수 있습니다"
+
+        blocked_create = test_client.post("/api/admin/stores", json={"name": "차단점", "code": "NO001"})
+        assert blocked_create.status_code == 401
+
+        allowed_manage = test_client.post("/api/admin/manage/login", json={"key": "kiosk-admin-key"})
+        assert allowed_manage.status_code == 200
+
+        create_response = test_client.post("/api/admin/stores", json={"name": "허용점", "code": "YES001"})
+        assert create_response.status_code == 201
+        assert create_response.json()["store"]["name"] == "허용점"
 
 
 def test_store_search_create_update_delete(client):
@@ -55,6 +92,8 @@ def test_store_search_create_update_delete(client):
 
     customer_search = client.get("/api/stores?search=동해")
     assert customer_search.json()["stores"] == []
+    admin_search = client.get("/api/admin/stores?search=DH002")
+    assert admin_search.json()["stores"] == []
 
 
 def test_store_code_lookup_and_duplicate_code_validation(client):
