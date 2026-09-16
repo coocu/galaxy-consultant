@@ -39,6 +39,10 @@ const appState = {
   lastCustomerCallId: 0,
   lastDisplayCallId: 0,
   pollingTimer: null,
+  eventSource: null,
+  eventReconnectTimer: null,
+  eventScope: null,
+  eventStoreId: null,
   callTimer: null,
   visibleCustomerCalls: {},
   visibleDisplayCalls: {},
@@ -93,7 +97,7 @@ function nowLabel() {
   return `${month}월${day}일${hour}시${minute}분`;
 }
 
-function setPolling(callback, milliseconds = 1000) {
+function setPolling(callback, milliseconds = 10000) {
   clearPolling();
   appState.pollingTimer = window.setInterval(callback, milliseconds);
 }
@@ -103,6 +107,20 @@ function clearPolling() {
     window.clearInterval(appState.pollingTimer);
     appState.pollingTimer = null;
   }
+  clearStoreEventStream();
+}
+
+function clearStoreEventStream() {
+  if (appState.eventReconnectTimer) {
+    window.clearTimeout(appState.eventReconnectTimer);
+    appState.eventReconnectTimer = null;
+  }
+  if (appState.eventSource) {
+    appState.eventSource.close();
+    appState.eventSource = null;
+  }
+  appState.eventScope = null;
+  appState.eventStoreId = null;
 }
 
 async function apiFetch(path, options = {}) {
@@ -665,6 +683,10 @@ async function getPushRegistration({ create = false } = {}) {
   if (!registration && create) {
     registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   }
+  if (registration && create) {
+    await navigator.serviceWorker.ready;
+    registration = await navigator.serviceWorker.ready;
+  }
   return registration;
 }
 
@@ -960,6 +982,163 @@ async function pollDisplayCalls() {
   await loadDisplayState(false);
 }
 
+function selectedStoreForScope(scope) {
+  if (scope === "admin") return appState.selectedAdminStore;
+  if (scope === "display") return appState.selectedDisplayStore;
+  return appState.selectedCustomerStore;
+}
+
+function selectedServiceForScope(scope) {
+  if (scope === "admin") return appState.selectedAdminService;
+  if (scope === "display") return appState.selectedDisplayService;
+  return appState.selectedCustomerService;
+}
+
+function applyStoreStateForScope(scope, state, options = {}) {
+  if (!state?.store) return;
+  const selectedStore = selectedStoreForScope(scope);
+  if (selectedStore && Number(selectedStore.id) !== Number(state.store.id)) return;
+
+  if (scope === "admin") {
+    appState.adminState = state;
+    appState.selectedAdminStore = state.store;
+    handleAdminTicketAlerts(state, { initial: options.initial === true });
+    renderAdmin();
+    return;
+  }
+
+  if (scope === "display") {
+    appState.displayState = state;
+    appState.selectedDisplayStore = state.store;
+    renderDisplay();
+    return;
+  }
+
+  appState.customerState = state;
+  appState.selectedCustomerStore = state.store;
+  renderCustomer();
+}
+
+function clearVisibleCallForService(scope, serviceType) {
+  if (!serviceType) return;
+  const store = getVisibleStore(scope);
+  delete store[serviceType];
+  const timerKey = `${scope}:${serviceType}`;
+  if (appState.visibleClearTimers[timerKey]) {
+    window.clearTimeout(appState.visibleClearTimers[timerKey]);
+    delete appState.visibleClearTimers[timerKey];
+  }
+}
+
+function clearSelectedStoreAfterDeletion(scope) {
+  if (scope === "admin") {
+    appState.selectedAdminStore = null;
+    appState.selectedAdminService = null;
+    appState.adminState = null;
+    appState.pushMessage = "선택한 매장이 삭제되었습니다.";
+    resetAdminTicketSnapshot();
+    renderAdmin();
+    return;
+  }
+
+  if (scope === "display") {
+    appState.selectedDisplayStore = null;
+    appState.selectedDisplayService = null;
+    appState.displayState = null;
+    appState.lastDisplayCallId = 0;
+    renderDisplay();
+    return;
+  }
+
+  appState.selectedCustomerStore = null;
+  appState.selectedCustomerService = null;
+  appState.customerState = null;
+  appState.lastCustomerCallId = 0;
+  renderCustomer();
+}
+
+function handleStoreEvent(scope, payload) {
+  const eventType = payload?.type || "state";
+
+  if (eventType === "store_deleted") {
+    clearStoreEventStream();
+    clearSelectedStoreAfterDeletion(scope);
+    return;
+  }
+
+  if (eventType === "service_reset") {
+    clearVisibleCallForService(scope, payload.service_type);
+  }
+
+  const call = payload?.call;
+  if (eventType === "call_created" && call?.ticket_number && scope !== "admin") {
+    const selectedService = selectedServiceForScope(scope);
+    if (selectedServiceMatchesCall(selectedService, call.service_type)) {
+      registerVisibleCall(scope, call);
+      if (payload.state) {
+        applyStoreStateForScope(scope, payload.state, { initial: false });
+      }
+      showCallPopup(call, appState.voiceEnabled);
+      return;
+    }
+  }
+
+  if (payload?.state) {
+    applyStoreStateForScope(scope, payload.state, { initial: eventType === "state" });
+  }
+}
+
+function fallbackPollingForScope(scope) {
+  if (scope === "admin") {
+    setPolling(() => loadAdminState({ initial: false }), 10000);
+  } else if (scope === "display") {
+    setPolling(pollDisplayCalls, 10000);
+  } else {
+    setPolling(pollCustomerCalls, 10000);
+  }
+}
+
+function startStoreEventStream(scope, storeId) {
+  clearPolling();
+  if (!storeId) return;
+
+  if (!("EventSource" in window)) {
+    fallbackPollingForScope(scope);
+    return;
+  }
+
+  appState.eventScope = scope;
+  appState.eventStoreId = Number(storeId);
+  const source = new EventSource(`/api/events/${encodeURIComponent(storeId)}`);
+  appState.eventSource = source;
+
+  source.onmessage = (event) => {
+    if (appState.eventSource !== source) return;
+    try {
+      handleStoreEvent(scope, JSON.parse(event.data));
+    } catch (_error) {
+
+    }
+  };
+
+  ["state", "ticket_created", "call_created", "service_reset", "store_updated", "store_deleted"].forEach((eventName) => {
+    source.addEventListener(eventName, source.onmessage);
+  });
+
+  source.onerror = () => {
+    if (appState.eventSource !== source) return;
+    source.close();
+    appState.eventSource = null;
+    if (appState.eventReconnectTimer) return;
+    appState.eventReconnectTimer = window.setTimeout(() => {
+      appState.eventReconnectTimer = null;
+      if (appState.eventScope === scope && Number(appState.eventStoreId) === Number(storeId)) {
+        startStoreEventStream(scope, storeId);
+      }
+    }, 3000);
+  };
+}
+
 async function adminLogin(key) {
   await apiFetch("/api/admin/login", { method: "POST", json: { key } });
   appState.adminAuthenticated = true;
@@ -1220,7 +1399,7 @@ async function initCustomer() {
     appState.selectedCustomerService = serviceType;
     await loadCustomerDisplayState(true);
     if (appState.selectedCustomerService) {
-      setPolling(pollCustomerCalls, 1000);
+      startStoreEventStream("customer", appState.selectedCustomerStore.id);
     }
   } else {
     renderCustomer();
@@ -1253,7 +1432,7 @@ async function initDisplay() {
     appState.selectedDisplayService = serviceType;
     await loadDisplayState(true);
     if (appState.selectedDisplayService) {
-      setPolling(pollDisplayCalls, 1000);
+      startStoreEventStream("display", appState.selectedDisplayStore.id);
     }
   } else {
     renderDisplay();
@@ -1341,7 +1520,7 @@ $app.addEventListener("click", (event) => {
     appState.viewerSettingsOpen = null;
     safeRun(async () => {
       await loadCustomerDisplayState(true);
-      setPolling(pollCustomerCalls, 1000);
+      startStoreEventStream("customer", appState.selectedCustomerStore.id);
     });
   }
 
@@ -1398,7 +1577,7 @@ $app.addEventListener("click", (event) => {
     safeRun(async () => {
       await loadAdminState({ initial: true });
       await syncExistingPushToSelectedStore();
-      setPolling(() => loadAdminState({ initial: false }), 2000);
+      startStoreEventStream("admin", appState.selectedAdminStore.id);
       renderAdmin();
     });
   }
@@ -1408,7 +1587,7 @@ $app.addEventListener("click", (event) => {
     appState.selectedAdminService = serviceType;
     safeRun(async () => {
       await loadAdminState({ initial: false });
-      setPolling(() => loadAdminState({ initial: false }), 2000);
+      startStoreEventStream("admin", appState.selectedAdminStore.id);
     });
   }
 
@@ -1417,7 +1596,7 @@ $app.addEventListener("click", (event) => {
     appState.selectedAdminService = null;
     renderAdmin();
     if (appState.selectedAdminStore) {
-      setPolling(() => loadAdminState({ initial: false }), 2000);
+      startStoreEventStream("admin", appState.selectedAdminStore.id);
     }
   }
 
@@ -1473,7 +1652,7 @@ $app.addEventListener("click", (event) => {
     appState.managementUnlocked = false;
     renderAdmin();
     if (appState.selectedAdminStore) {
-      setPolling(() => loadAdminState({ initial: false }), 2000);
+      startStoreEventStream("admin", appState.selectedAdminStore.id);
     }
   }
 
@@ -1538,7 +1717,7 @@ $app.addEventListener("click", (event) => {
     appState.viewerSettingsOpen = null;
     safeRun(async () => {
       await loadDisplayState(true);
-      setPolling(pollDisplayCalls, 1000);
+      startStoreEventStream("display", appState.selectedDisplayStore.id);
     });
   }
 

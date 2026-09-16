@@ -82,7 +82,9 @@ def test_admin_foreground_ticket_alert_is_present():
     assert 'function handleAdminTicketAlerts(nextState, { initial = false } = {})' in app_js
     assert 'playAdminTicketSound();' in app_js
     assert 'showAdminBrowserNotification(newestTicket, message);' in app_js
-    assert 'setPolling(() => loadAdminState({ initial: false }), 2000)' in app_js
+    assert 'function startStoreEventStream(scope, storeId)' in app_js
+    assert 'new EventSource(`/api/events/${encodeURIComponent(storeId)}`)' in app_js
+    assert 'startStoreEventStream("admin", appState.selectedAdminStore.id);' in app_js
 
 
 def test_service_worker_notification_requests_sound_and_vibration():

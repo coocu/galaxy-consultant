@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -55,6 +56,60 @@ ADMIN_SESSION_COOKIE = "codenote_staff_call_admin_session"
 ADMIN_SESSION_SECONDS = 30 * 60
 MANAGE_SESSION_COOKIE = "codenote_staff_call_manage_session"
 MANAGE_SESSION_SECONDS = 10 * 60
+
+
+class StoreEventBroker:
+    """매장별 SSE 구독자에게 변경 이벤트를 전달하는 단일 프로세스 브로커."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._subscribers: dict[int, set[asyncio.Queue[dict[str, object]]]] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def subscribe(self, store_id: int) -> asyncio.Queue[dict[str, object]]:
+        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=100)
+        with self._lock:
+            self._subscribers.setdefault(int(store_id), set()).add(queue)
+        return queue
+
+    def unsubscribe(self, store_id: int, queue: asyncio.Queue[dict[str, object]]) -> None:
+        with self._lock:
+            queues = self._subscribers.get(int(store_id))
+            if not queues:
+                return
+            queues.discard(queue)
+            if not queues:
+                self._subscribers.pop(int(store_id), None)
+
+    def publish(self, store_id: int, payload: dict[str, object]) -> None:
+        with self._lock:
+            queues = list(self._subscribers.get(int(store_id), set()))
+        loop = self._loop
+        if not loop or not loop.is_running() or not queues:
+            return
+        for queue in queues:
+            loop.call_soon_threadsafe(self._offer, queue, payload)
+
+    @staticmethod
+    def _offer(queue: asyncio.Queue[dict[str, object]], payload: dict[str, object]) -> None:
+        if queue.full():
+            with suppress(asyncio.QueueEmpty):
+                queue.get_nowait()
+        queue.put_nowait(payload)
+
+
+def _format_sse(event_name: str, payload: dict[str, object]) -> str:
+    body = json.dumps(payload, ensure_ascii=False, default=str)
+    return f"event: {event_name}\ndata: {body}\n\n"
+
+
+def _publish_store_event(app: FastAPI, store_id: int, payload: dict[str, object]) -> None:
+    broker = getattr(app.state, "store_event_broker", None)
+    if isinstance(broker, StoreEventBroker):
+        broker.publish(store_id, payload)
 
 
 class LoginBody(BaseModel):
@@ -287,6 +342,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        _app.state.store_event_broker.set_loop(asyncio.get_running_loop())
         Base.metadata.create_all(bind=engine)
         ensure_store_code_schema(engine)
         db = session_local()
@@ -306,6 +362,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     app.state.manage_session_lock = threading.RLock()
     app.state.auth_checker = test_config.get("AUTH_CHECKER")
     app.state.push_sender = test_config.get("PUSH_SENDER")
+    app.state.store_event_broker = StoreEventBroker()
 
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
@@ -421,7 +478,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         return {"store": store_to_dict(store)}
 
     @app.put("/api/admin/stores/{store_id}", dependencies=[Depends(require_store_manager)])
-    def update_store(store_id: int, body: StoreUpdateBody, db: Session = Depends(get_db)) -> dict[str, object]:
+    def update_store(store_id: int, body: StoreUpdateBody, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
         store = db.get(Store, store_id)
         if store is None:
             raise HTTPException(status_code=404, detail="매장을 찾을 수 없습니다")
@@ -440,26 +497,45 @@ def create_app(test_config: dict | None = None) -> FastAPI:
             store.is_active = body.is_active
         db.commit()
         db.refresh(store)
-        return {"store": store_to_dict(store)}
+        store_payload = store_to_dict(store)
+        try:
+            state_payload = get_store_state(db, store_id)
+        except ValueError:
+            state_payload = None
+        _publish_store_event(request.app, store_id, {
+            "type": "store_updated",
+            "store": store_payload,
+            "state": state_payload,
+        })
+        return {"store": store_payload}
 
     @app.delete("/api/admin/stores/{store_id}", dependencies=[Depends(require_store_manager)])
-    def delete_store(store_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    def delete_store(store_id: int, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
         store = db.get(Store, store_id)
         if store is None:
             raise HTTPException(status_code=404, detail="매장을 찾을 수 없습니다")
         deleted = store_to_dict(store)
         db.delete(store)
         db.commit()
+        _publish_store_event(request.app, store_id, {"type": "store_deleted", "store": deleted})
         return {"store": deleted, "message": "매장 카테고리가 삭제되었습니다"}
 
     @app.post("/api/tickets", status_code=201)
     def create_ticket(body: TicketCreateBody, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
         try:
             ticket = issue_ticket(db, body.store_id, body.service_type)
+            ticket_payload = ticket_to_dict(ticket)
+            state_payload = get_store_state(db, body.store_id)
         except ValueError as exc:
             raise api_error(exc) from exc
         push_result = send_ticket_push_notifications(request.app, db, ticket)
-        return {"ticket": ticket_to_dict(ticket), "push": push_result}
+        _publish_store_event(request.app, body.store_id, {
+            "type": "ticket_created",
+            "ticket": ticket_payload,
+            "state": state_payload,
+            "push": push_result,
+        })
+        return {"ticket": ticket_payload, "state": state_payload, "push": push_result}
 
     @app.get("/api/state/{store_id}")
     def state(store_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
@@ -469,8 +545,46 @@ def create_app(test_config: dict | None = None) -> FastAPI:
             raise api_error(exc) from exc
         return {"state": payload}
 
+    @app.get("/api/events/{store_id}")
+    async def store_events(store_id: int, request: Request) -> StreamingResponse:
+        db = request.app.state.SessionLocal()
+        try:
+            initial_state = get_store_state(db, store_id)
+        except ValueError as exc:
+            raise api_error(exc) from exc
+        finally:
+            db.close()
+
+        queue = request.app.state.store_event_broker.subscribe(store_id)
+
+        async def event_stream():
+            try:
+                yield _format_sse("state", {"type": "state", "state": initial_state})
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        event_payload = await asyncio.wait_for(queue.get(), timeout=25)
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    event_name = str(event_payload.get("type") or "message")
+                    yield _format_sse(event_name, event_payload)
+            finally:
+                request.app.state.store_event_broker.unsubscribe(store_id, queue)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @app.post("/api/admin/call", dependencies=[Depends(require_admin)])
-    def call_customer(body: CallBody, db: Session = Depends(get_db)) -> dict[str, object]:
+    def call_customer(body: CallBody, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
         try:
             if body.call_type == CALL_NORMAL:
                 call = call_next(db, body.store_id, body.service_type)
@@ -482,17 +596,29 @@ def create_app(test_config: dict | None = None) -> FastAPI:
                 call = direct_call(db, body.store_id, body.service_type, body.ticket_number)
             else:
                 raise ValueError("지원하지 않는 호출 방식입니다")
+            call_payload = call_to_dict(call)
+            state_payload = get_store_state(db, body.store_id)
         except ValueError as exc:
             raise api_error(exc) from exc
-        return {"call": call_to_dict(call), "state": get_store_state(db, body.store_id)}
+        _publish_store_event(request.app, body.store_id, {
+            "type": "call_created",
+            "call": call_payload,
+            "state": state_payload,
+        })
+        return {"call": call_payload, "state": state_payload}
 
     @app.post("/api/admin/reset", dependencies=[Depends(require_admin)])
-    def reset_queue(body: ResetBody, db: Session = Depends(get_db)) -> dict[str, object]:
+    def reset_queue(body: ResetBody, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
         try:
             reset_service(db, body.store_id, body.service_type)
             payload = get_store_state(db, body.store_id)
         except ValueError as exc:
             raise api_error(exc) from exc
+        _publish_store_event(request.app, body.store_id, {
+            "type": "service_reset",
+            "service_type": body.service_type,
+            "state": payload,
+        })
         return {"state": payload, "message": "초기화되었습니다"}
 
     @app.get("/api/calls")
