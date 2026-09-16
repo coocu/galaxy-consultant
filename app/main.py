@@ -206,9 +206,13 @@ def require_admin(request: Request) -> None:
 
 
 def require_store_manager(request: Request) -> None:
-    require_admin(request)
     if not _has_manage_session(request):
         raise HTTPException(status_code=401, detail="매장 관리 인증이 필요합니다")
+
+
+def require_admin_or_store_manager(request: Request) -> None:
+    if not (_has_admin_session(request) or _has_manage_session(request)):
+        raise HTTPException(status_code=401, detail="관리자 또는 매장 관리 인증이 필요합니다")
 
 
 def api_error(exc: ValueError) -> HTTPException:
@@ -445,7 +449,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         response.delete_cookie(MANAGE_SESSION_COOKIE, path="/")
         return response
 
-    @app.post("/api/admin/manage/login", dependencies=[Depends(require_admin)])
+    @app.post("/api/admin/manage/login")
     def manage_login(body: LoginBody, request: Request) -> JSONResponse:
         _verify_manage_key(request.app, body.key)
         token = _issue_manage_session(request.app)
@@ -453,7 +457,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         _set_manage_cookie(response, request, token)
         return response
 
-    @app.get("/api/admin/stores", dependencies=[Depends(require_admin)])
+    @app.get("/api/admin/stores", dependencies=[Depends(require_admin_or_store_manager)])
     def list_admin_stores(search: str = "", db: Session = Depends(get_db)) -> dict[str, object]:
         query = select(Store)
         if search.strip():

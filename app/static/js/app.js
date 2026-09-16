@@ -7,6 +7,7 @@ const CALL_NUMBER_VISIBLE_MS = POPUP_VISIBLE_MS + 5000;
 
 const appState = {
   route: window.location.pathname,
+  entryStore: null,
   customerStores: [],
   adminStores: [],
   customerSearch: "",
@@ -151,6 +152,24 @@ function go(path) {
   window.location.href = path;
 }
 
+function requestedStoreId() {
+  const params = new URLSearchParams(window.location.search);
+  const storeId = Number(params.get("store_id"));
+  return Number.isInteger(storeId) && storeId > 0 ? storeId : 0;
+}
+
+function renderCurrentRoute() {
+  if (appState.route === "/admin") {
+    renderAdmin();
+  } else if (appState.route === "/customer") {
+    renderCustomer();
+  } else if (appState.route === "/display") {
+    renderDisplay();
+  } else {
+    renderHome();
+  }
+}
+
 function headerHtml(title, subtitle = "", actions = "", extraClass = "") {
   const className = extraClass ? `topbar ${extraClass}` : "topbar";
   return `
@@ -165,17 +184,38 @@ function headerHtml(title, subtitle = "", actions = "", extraClass = "") {
 }
 
 function renderHome() {
+  const managementGear = `<button class="viewer-gear home-gear" type="button" data-action="openHomeManage" aria-label="매장 관리">⚙</button>`;
+
+  if (!appState.entryStore) {
+    $app.innerHTML = `
+      <main class="home-wrap store-login-home">
+        ${managementGear}
+        <section class="store-login-card">
+          <h1 class="store-login-title">매장 로그인</h1>
+          <p class="store-login-subtitle">점코드를 입력해주세요</p>
+          <input id="storeCode" class="input store-code-input" type="text" placeholder="점코드" autocomplete="off" />
+          <button class="btn btn-primary store-login-button" type="button" data-action="storeCodeLogin">확인</button>
+        </section>
+        ${renderManageModal()}
+      </main>
+    `;
+    return;
+  }
+
+  const monitoringUrl = `/customer?store_id=${appState.entryStore.id}`;
+  const adminUrl = `/admin?store_id=${appState.entryStore.id}`;
   $app.innerHTML = `
-    <main class="home-wrap">
-      <section class="home-card">
-        <div class="home-logo">C</div>
-        <h1 class="brand-title">직원 호출</h1>
-        <p class="sub-title">고객 호출 화면과 관리자 호출을 매장별로 분리합니다.</p>
-        <div class="home-buttons">
-          <button class="btn btn-primary" data-link="/customer">고객</button>
-          <button class="btn btn-ghost" data-link="/admin">관리자</button>
+    <main class="home-wrap store-login-home">
+      ${managementGear}
+      <section class="store-login-card role-choice-card">
+        <h1 class="store-login-title">${escapeHtml(appState.entryStore.name)}</h1>
+        <p class="store-login-subtitle">사용할 화면을 선택해주세요</p>
+        <div class="home-buttons role-choice-buttons">
+          <button class="btn btn-primary" data-link="${monitoringUrl}">모니터링</button>
+          <button class="btn btn-ghost" data-link="${adminUrl}">관리자</button>
         </div>
       </section>
+      ${renderManageModal()}
     </main>
   `;
 }
@@ -224,7 +264,6 @@ function renderViewerSettingsModal(scope) {
   if (appState.viewerSettingsOpen !== scope) return "";
   const isDisplay = scope === "display";
   const changeServiceAction = isDisplay ? "changeDisplayService" : "changeCustomerService";
-  const changeStoreAction = isDisplay ? "changeDisplayStore" : "changeCustomerStore";
   return `
     <div class="modal-backdrop" data-action="closeViewerSettings">
       <section class="modal viewer-settings-modal" role="dialog" aria-modal="true" aria-label="화면 설정" data-action="stopModalClose">
@@ -235,7 +274,6 @@ function renderViewerSettingsModal(scope) {
         <div class="viewer-settings-actions">
           <button class="btn btn-primary" type="button" data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button>
           <button class="btn btn-ghost" type="button" data-action="${changeServiceAction}">업무 변경</button>
-          <button class="btn btn-ghost" type="button" data-action="${changeStoreAction}">매장 변경</button>
         </div>
       </section>
     </div>
@@ -264,10 +302,8 @@ function renderAdminSettingsModal() {
         </div>
         <div class="viewer-settings-actions">
           ${pushButton}
-          ${selectedStore ? `<a class="btn btn-ghost" href="${customerUrl}" target="_blank" rel="noopener">고객화면</a>` : ""}
-          ${selectedService ? `<button class="btn btn-ghost" type="button" data-action="changeAdminService">업무 변경</button>` : ""}
-          ${selectedStore ? `<button class="btn btn-ghost" type="button" data-action="changeAdminStore">매장 변경</button>` : ""}
-          <button class="btn btn-ghost" type="button" data-action="openManage">매장관리</button>
+          ${selectedStore ? `<a class="btn btn-ghost" href="${customerUrl}" target="_blank" rel="noopener">모니터링 화면</a>` : ""}
+          ${selectedService ? `<button class="btn btn-ghost" type="button" data-action="changeAdminService">보기방식</button>` : ""}
           <button class="btn btn-danger" type="button" data-action="logoutAdmin">로그아웃</button>
           <button class="btn btn-ghost" type="button" data-link="/">처음으로</button>
         </div>
@@ -301,16 +337,7 @@ function renderCustomer() {
   const actions = `<button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`;
 
   if (!selected) {
-    $app.innerHTML = `
-      ${headerHtml("고객", "매장을 검색하고 선택하세요.", actions)}
-      <section class="layout-card">
-        <div class="search-row">
-          <input id="customerSearch" class="input" value="${escapeHtml(appState.customerSearch)}" placeholder="매장명 또는 점코드 검색" />
-          <button class="btn btn-primary" data-action="customerSearch">검색</button>
-        </div>
-        <div class="store-list">${renderStoreList(appState.customerStores, "selectCustomerStore")}</div>
-      </section>
-    `;
+    go("/");
     return;
   }
 
@@ -319,7 +346,7 @@ function renderCustomer() {
       ${headerHtml(
         selected.name,
         "간단서비스와 구매문의를 따로 선택합니다.",
-        `<button class="btn btn-ghost btn-small" data-action="changeCustomerStore">매장 변경</button><button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`
+        actions
       )}
       ${renderServiceChoice("customer", selected)}
     `;
@@ -397,23 +424,7 @@ function renderAdmin() {
 
   if (!appState.selectedAdminStore) {
     clearPolling();
-    $app.innerHTML = `
-      ${headerHtml(
-        "관리자",
-        "관리할 매장을 선택하세요.",
-        renderAdminGear(),
-        "admin-topbar"
-      )}
-      <section class="layout-card">
-        <div class="search-row">
-          <input id="adminStoreSearch" class="input" value="${escapeHtml(appState.adminSearch)}" placeholder="매장명 또는 점코드 검색" />
-          <button class="btn btn-primary" data-action="adminStoreSearch">검색</button>
-        </div>
-        <div class="store-list">${renderStoreList(appState.adminStores.filter((store) => store.is_active), "selectAdminStore")}</div>
-      </section>
-      ${renderAdminSettingsModal()}
-      ${renderManageModal()}
-    `;
+    go("/");
     return;
   }
 
@@ -428,7 +439,6 @@ function renderAdmin() {
       ${renderPushNotice()}
       ${renderServiceChoice("admin", appState.selectedAdminStore)}
       ${renderAdminSettingsModal()}
-      ${renderManageModal()}
     `;
     return;
   }
@@ -451,7 +461,6 @@ function renderAdmin() {
     ${renderPushNotice()}
     ${renderAdminCallBody(appState.selectedAdminService)}
     ${renderAdminSettingsModal()}
-    ${renderManageModal()}
   `;
 }
 
@@ -804,9 +813,9 @@ function renderManageModal() {
 
 function renderManageUnlock() {
   return `
-    <p class="sub-title">매장 관리는 관리자 인증키가 필요합니다.</p>
+    <p class="sub-title">매장 관리는 kiosk가 포함된 인증키가 필요합니다.</p>
     <div class="search-row mt-2">
-      <input id="manageKey" class="input" type="password" placeholder="인증키 재입력" />
+      <input id="manageKey" class="input" type="password" placeholder="kiosk 인증키" />
       <button class="btn btn-primary" data-action="unlockManage">확인</button>
     </div>
   `;
@@ -914,6 +923,18 @@ async function loadCustomerStores() {
 async function loadAdminStores() {
   const payload = await apiFetch(`/api/admin/stores?search=${encodeURIComponent(appState.adminSearch || appState.manageSearch)}`, { admin: true });
   appState.adminStores = payload.stores;
+}
+
+function selectRequestedAdminStore() {
+  const storeId = requestedStoreId();
+  if (!storeId) {
+    appState.selectedAdminStore = null;
+    return false;
+  }
+  appState.selectedAdminStore = appState.adminStores.find((store) => store.id === storeId && store.is_active) || null;
+  appState.selectedAdminService = null;
+  resetAdminTicketSnapshot();
+  return Boolean(appState.selectedAdminStore);
 }
 
 function selectedStoreForScope(scope) {
@@ -1069,12 +1090,28 @@ function startStoreEventStream(scope, storeId) {
   };
 }
 
+async function loginStoreByCode(code) {
+  const normalizedCode = String(code || "").trim();
+  if (!normalizedCode) {
+    throw new Error("점코드를 입력하세요");
+  }
+  const payload = await apiFetch(`/api/stores/by-code/${encodeURIComponent(code)}`);
+  appState.entryStore = payload.store;
+  renderHome();
+}
+
 async function adminLogin(key) {
   await apiFetch("/api/admin/login", { method: "POST", json: { key } });
   appState.adminAuthenticated = true;
   await loadAdminStores();
+  if (!selectRequestedAdminStore()) {
+    go("/");
+    return;
+  }
   await refreshPushStatus();
   renderAdmin();
+  await syncExistingPushToSelectedStore();
+  startStoreEventStream("admin", appState.selectedAdminStore.id);
 }
 
 async function issueTicketForApp(serviceType) {
@@ -1150,7 +1187,7 @@ async function addStore() {
   appState.manageSearch = "";
   appState.adminSearch = "";
   await loadAdminStores();
-  renderAdmin();
+  renderCurrentRoute();
 }
 
 async function editStore(storeId) {
@@ -1180,8 +1217,11 @@ async function editStore(storeId) {
   if (appState.selectedDisplayStore?.id === storeId) {
     appState.selectedDisplayStore = payload.store;
   }
+  if (appState.entryStore?.id === storeId) {
+    appState.entryStore = payload.store;
+  }
   await loadAdminStores();
-  renderAdmin();
+  renderCurrentRoute();
 }
 
 async function deleteStore(storeId) {
@@ -1195,14 +1235,17 @@ async function deleteStore(storeId) {
     appState.selectedAdminService = null;
     appState.adminState = null;
   }
+  if (appState.entryStore?.id === storeId) {
+    appState.entryStore = null;
+  }
   await loadAdminStores();
-  renderAdmin();
+  renderCurrentRoute();
 }
 
 async function restoreStore(storeId) {
   await apiFetch(`/api/admin/stores/${storeId}`, { method: "PUT", admin: true, json: { is_active: true } });
   await loadAdminStores();
-  renderAdmin();
+  renderCurrentRoute();
 }
 
 async function downloadBackup() {
@@ -1244,13 +1287,14 @@ async function restoreBackup() {
     throw new Error(payload?.detail || "복원 실패");
   }
   alert("복원이 완료되었습니다");
+  appState.entryStore = null;
   appState.selectedAdminStore = null;
   appState.selectedAdminService = null;
   appState.adminState = null;
   appState.manageSearch = "";
   appState.adminSearch = "";
   await loadAdminStores();
-  renderAdmin();
+  renderCurrentRoute();
 }
 
 function speak(text) {
@@ -1321,34 +1365,50 @@ function showCallPopup(call, shouldSpeak) {
 async function initCustomer() {
   clearPolling();
   const params = new URLSearchParams(window.location.search);
-  const storeId = Number(params.get("store_id"));
+  const storeId = requestedStoreId();
   const serviceType = validCustomerViewType(params.get("service_type"));
+  if (!storeId) {
+    go("/");
+    return;
+  }
   await loadCustomerStores();
-  if (storeId) {
-    appState.selectedCustomerStore = appState.customerStores.find((store) => store.id === storeId) || { id: storeId, name: "고객 호출 화면", is_active: true };
-    appState.selectedCustomerService = serviceType;
-    renderCustomer();
-    if (appState.selectedCustomerService) {
-      startStoreEventStream("customer", appState.selectedCustomerStore.id);
-    }
-  } else {
-    renderCustomer();
+  appState.selectedCustomerStore = appState.customerStores.find((store) => store.id === storeId) || null;
+  if (!appState.selectedCustomerStore) {
+    go("/");
+    return;
+  }
+  appState.selectedCustomerService = serviceType;
+  renderCustomer();
+  if (appState.selectedCustomerService) {
+    startStoreEventStream("customer", appState.selectedCustomerStore.id);
   }
 }
 
 async function initAdmin() {
   clearPolling();
+  if (!requestedStoreId()) {
+    go("/");
+    return;
+  }
   try {
     const status = await apiFetch("/api/admin/status");
     appState.adminAuthenticated = Boolean(status.authenticated);
     if (appState.adminAuthenticated) {
       await loadAdminStores();
+      if (!selectRequestedAdminStore()) {
+        go("/");
+        return;
+      }
       await refreshPushStatus();
     }
   } catch (_error) {
     appState.adminAuthenticated = false;
   }
   renderAdmin();
+  if (appState.adminAuthenticated && appState.selectedAdminStore) {
+    await syncExistingPushToSelectedStore();
+    startStoreEventStream("admin", appState.selectedAdminStore.id);
+  }
 }
 
 async function initDisplay() {
@@ -1395,6 +1455,18 @@ $app.addEventListener("click", (event) => {
 
   if (appState.route === "/admin") {
     primeAdminAudio();
+  }
+
+  if (action === "storeCodeLogin") {
+    const code = document.getElementById("storeCode")?.value.trim() || "";
+    safeRun(() => loginStoreByCode(code));
+  }
+
+  if (action === "openHomeManage") {
+    appState.modalOpen = true;
+    appState.managementUnlocked = false;
+    appState.manageSearch = "";
+    renderHome();
   }
 
   if (action === "openAdminSettings") {
@@ -1573,8 +1645,8 @@ $app.addEventListener("click", (event) => {
   if (action === "closeManage") {
     appState.modalOpen = false;
     appState.managementUnlocked = false;
-    renderAdmin();
-    if (appState.selectedAdminStore) {
+    renderCurrentRoute();
+    if (appState.route === "/admin" && appState.selectedAdminStore) {
       startStoreEventStream("admin", appState.selectedAdminStore.id);
     }
   }
@@ -1585,7 +1657,7 @@ $app.addEventListener("click", (event) => {
       await apiFetch("/api/admin/manage/login", { method: "POST", json: { key } });
       appState.managementUnlocked = true;
       await loadAdminStores();
-      renderAdmin();
+      renderCurrentRoute();
     });
   }
 
@@ -1596,7 +1668,7 @@ $app.addEventListener("click", (event) => {
   if (action === "searchManage") {
     appState.manageSearch = document.getElementById("manageSearch")?.value.trim() || "";
     appState.adminSearch = "";
-    safeRun(async () => { await loadAdminStores(); renderAdmin(); });
+    safeRun(async () => { await loadAdminStores(); renderCurrentRoute(); });
   }
 
   if (action === "editStore") {
