@@ -655,7 +655,7 @@ function renderManageModal() {
 
 function renderManageUnlock() {
   return `
-    <p class="sub-title">매장 관리는 kiosk가 포함된 인증키를 다시 입력해야 사용할 수 있습니다.</p>
+    <p class="sub-title">매장 관리는 관리자 인증키가 필요합니다.</p>
     <div class="search-row mt-2">
       <input id="manageKey" class="input" type="password" placeholder="인증키 재입력" />
       <button class="btn btn-primary" data-action="unlockManage">확인</button>
