@@ -97,11 +97,6 @@ function nowLabel() {
   return `${month}월${day}일${hour}시${minute}분`;
 }
 
-function setPolling(callback, milliseconds = 10000) {
-  clearPolling();
-  appState.pollingTimer = window.setInterval(callback, milliseconds);
-}
-
 function clearPolling() {
   if (appState.pollingTimer) {
     window.clearInterval(appState.pollingTimer);
@@ -921,67 +916,6 @@ async function loadAdminStores() {
   appState.adminStores = payload.stores;
 }
 
-async function loadAdminState(options = {}) {
-  if (!appState.selectedAdminStore) return;
-  const payload = await apiFetch(`/api/state/${appState.selectedAdminStore.id}`);
-  appState.adminState = payload.state;
-  appState.selectedAdminStore = payload.state.store;
-  handleAdminTicketAlerts(payload.state, { initial: options.initial === true });
-  renderAdmin();
-}
-
-async function loadCustomerDisplayState(initial = false) {
-  if (!appState.selectedCustomerStore) return;
-  const payload = await apiFetch(`/api/state/${appState.selectedCustomerStore.id}`);
-  appState.customerState = payload.state;
-  appState.selectedCustomerStore = payload.state.store;
-  if (initial) {
-    appState.lastCustomerCallId = payload.state.last_call_id || 0;
-  }
-  renderCustomer();
-}
-
-async function pollCustomerCalls() {
-  if (!appState.selectedCustomerStore) return;
-  const payload = await apiFetch(`/api/calls?store_id=${appState.selectedCustomerStore.id}&after_id=${appState.lastCustomerCallId}`);
-  if (payload.calls.length) {
-    for (const call of payload.calls) {
-      appState.lastCustomerCallId = Math.max(appState.lastCustomerCallId, call.id);
-      if (call.ticket_number && selectedServiceMatchesCall(appState.selectedCustomerService, call.service_type)) {
-        registerVisibleCall("customer", call);
-        showCallPopup(call, appState.voiceEnabled);
-      }
-    }
-  }
-  await loadCustomerDisplayState(false);
-}
-
-async function loadDisplayState(initial = false) {
-  if (!appState.selectedDisplayStore) return;
-  const payload = await apiFetch(`/api/state/${appState.selectedDisplayStore.id}`);
-  appState.displayState = payload.state;
-  appState.selectedDisplayStore = payload.state.store;
-  if (initial) {
-    appState.lastDisplayCallId = payload.state.last_call_id || 0;
-  }
-  renderDisplay();
-}
-
-async function pollDisplayCalls() {
-  if (!appState.selectedDisplayStore) return;
-  const payload = await apiFetch(`/api/calls?store_id=${appState.selectedDisplayStore.id}&after_id=${appState.lastDisplayCallId}`);
-  if (payload.calls.length) {
-    for (const call of payload.calls) {
-      appState.lastDisplayCallId = Math.max(appState.lastDisplayCallId, call.id);
-      if (call.ticket_number && selectedServiceMatchesCall(appState.selectedDisplayService, call.service_type)) {
-        registerVisibleCall("display", call);
-        showCallPopup(call, appState.voiceEnabled);
-      }
-    }
-  }
-  await loadDisplayState(false);
-}
-
 function selectedStoreForScope(scope) {
   if (scope === "admin") return appState.selectedAdminStore;
   if (scope === "display") return appState.selectedDisplayStore;
@@ -1088,22 +1022,18 @@ function handleStoreEvent(scope, payload) {
   }
 }
 
-function fallbackPollingForScope(scope) {
-  if (scope === "admin") {
-    setPolling(() => loadAdminState({ initial: false }), 10000);
-  } else if (scope === "display") {
-    setPolling(pollDisplayCalls, 10000);
-  } else {
-    setPolling(pollCustomerCalls, 10000);
-  }
-}
-
 function startStoreEventStream(scope, storeId) {
   clearPolling();
   if (!storeId) return;
 
   if (!("EventSource" in window)) {
-    fallbackPollingForScope(scope);
+    const message = "현재 브라우저가 실시간 연결(SSE)을 지원하지 않습니다. 최신 브라우저로 다시 접속해주세요.";
+    if (scope === "admin") {
+      appState.pushMessage = message;
+      renderAdmin();
+    } else {
+      alert(message);
+    }
     return;
   }
 
@@ -1397,7 +1327,7 @@ async function initCustomer() {
   if (storeId) {
     appState.selectedCustomerStore = appState.customerStores.find((store) => store.id === storeId) || { id: storeId, name: "고객 호출 화면", is_active: true };
     appState.selectedCustomerService = serviceType;
-    await loadCustomerDisplayState(true);
+    renderCustomer();
     if (appState.selectedCustomerService) {
       startStoreEventStream("customer", appState.selectedCustomerStore.id);
     }
@@ -1430,7 +1360,7 @@ async function initDisplay() {
   if (storeId) {
     appState.selectedDisplayStore = appState.customerStores.find((store) => store.id === storeId) || { id: storeId, name: "고객 호출 화면", is_active: true };
     appState.selectedDisplayService = serviceType;
-    await loadDisplayState(true);
+    renderDisplay();
     if (appState.selectedDisplayService) {
       startStoreEventStream("display", appState.selectedDisplayStore.id);
     }
@@ -1510,18 +1440,14 @@ $app.addEventListener("click", (event) => {
     appState.viewerSettingsOpen = null;
     appState.customerState = null;
     appState.lastCustomerCallId = 0;
-    safeRun(async () => {
-      await loadCustomerDisplayState(true);
-    });
+    renderCustomer();
   }
 
   if (action === "selectCustomerService") {
     appState.selectedCustomerService = serviceType;
     appState.viewerSettingsOpen = null;
-    safeRun(async () => {
-      await loadCustomerDisplayState(true);
-      startStoreEventStream("customer", appState.selectedCustomerStore.id);
-    });
+    renderCustomer();
+    startStoreEventStream("customer", appState.selectedCustomerStore.id);
   }
 
   if (action === "changeCustomerService") {
@@ -1574,21 +1500,18 @@ $app.addEventListener("click", (event) => {
     appState.selectedAdminStore = appState.adminStores.find((store) => store.id === storeId) || null;
     appState.selectedAdminService = null;
     resetAdminTicketSnapshot();
+    renderAdmin();
     safeRun(async () => {
-      await loadAdminState({ initial: true });
       await syncExistingPushToSelectedStore();
       startStoreEventStream("admin", appState.selectedAdminStore.id);
-      renderAdmin();
     });
   }
 
   if (action === "selectAdminService") {
     appState.adminSettingsOpen = false;
     appState.selectedAdminService = serviceType;
-    safeRun(async () => {
-      await loadAdminState({ initial: false });
-      startStoreEventStream("admin", appState.selectedAdminStore.id);
-    });
+    renderAdmin();
+    startStoreEventStream("admin", appState.selectedAdminStore.id);
   }
 
   if (action === "changeAdminService") {
@@ -1707,18 +1630,14 @@ $app.addEventListener("click", (event) => {
     appState.viewerSettingsOpen = null;
     appState.displayState = null;
     appState.lastDisplayCallId = 0;
-    safeRun(async () => {
-      await loadDisplayState(true);
-    });
+    renderDisplay();
   }
 
   if (action === "selectDisplayService") {
     appState.selectedDisplayService = serviceType;
     appState.viewerSettingsOpen = null;
-    safeRun(async () => {
-      await loadDisplayState(true);
-      startStoreEventStream("display", appState.selectedDisplayStore.id);
-    });
+    renderDisplay();
+    startStoreEventStream("display", appState.selectedDisplayStore.id);
   }
 
   if (action === "changeDisplayService") {

@@ -20,8 +20,8 @@ def test_integrated_view_renders_both_customer_service_cards():
 
     assert 'function renderViewerCallBody(scope, selectedService)' in app_js
     assert 'SERVICE_ORDER.map((serviceType) => renderCustomerDisplayServiceCard(serviceType, scope)).join("")' in app_js
-    assert 'selectedServiceMatchesCall(appState.selectedCustomerService, call.service_type)' in app_js
-    assert 'selectedServiceMatchesCall(appState.selectedDisplayService, call.service_type)' in app_js
+    assert 'const selectedService = selectedServiceForScope(scope);' in app_js
+    assert 'selectedServiceMatchesCall(selectedService, call.service_type)' in app_js
 
 
 def test_customer_viewer_controls_are_hidden_behind_gear_modal():
@@ -92,3 +92,14 @@ def test_service_worker_notification_requests_sound_and_vibration():
 
     assert 'silent: false' in sw_js
     assert 'vibrate: payload.vibrate || [160, 80, 160]' in sw_js
+
+
+def test_web_sse_does_not_start_legacy_state_polling():
+    app_js = read_asset("app/static/js/app.js")
+
+    assert "window.setInterval" not in app_js
+    assert "setPolling(" not in app_js
+    assert "fallbackPollingForScope" not in app_js
+    assert "pollCustomerCalls" not in app_js
+    assert "pollDisplayCalls" not in app_js
+    assert "`/api/state/${" not in app_js
