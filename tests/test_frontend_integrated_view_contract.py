@@ -42,3 +42,34 @@ def test_integrated_view_uses_responsive_two_column_css():
     assert '.integrated-service-wrap' in style_css
     assert 'grid-template-columns: repeat(2, minmax(0, 1fr));' in style_css
     assert '.grid-two, .integrated-service-wrap { grid-template-columns: 1fr; }' in style_css
+
+
+def test_admin_service_choice_has_integrated_view_button():
+    app_js = read_asset("app/static/js/app.js")
+
+    assert 'function renderAdminCallBody(selectedService)' in app_js
+    assert 'data-service="${INTEGRATED_SERVICE}">통합보기</button>' in app_js
+    assert 'isIntegratedView(appState.selectedAdminService)' in app_js
+    assert 'SERVICE_ORDER.map((serviceType) => renderAdminServiceCard(serviceType)).join("")' in app_js
+
+
+def test_admin_controls_are_hidden_behind_gear_modal():
+    app_js = read_asset("app/static/js/app.js")
+
+    assert 'adminSettingsOpen: false' in app_js
+    assert 'function renderAdminGear()' in app_js
+    assert 'function renderAdminSettingsModal()' in app_js
+    assert 'data-action="openAdminSettings"' in app_js
+    assert 'data-action="closeAdminSettings"' in app_js
+    assert 'renderPushControl(false)' in app_js
+    assert 'data-action="openManage">매장관리</button>' in app_js
+    assert 'data-action="logoutAdmin">로그아웃</button>' in app_js
+
+
+def test_admin_gear_stays_in_top_right_on_mobile():
+    app_js = read_asset("app/static/js/app.js")
+    style_css = read_asset("app/static/css/style.css")
+
+    assert '"admin-topbar"' in app_js
+    assert '.topbar.admin-topbar' in style_css
+    assert '.topbar.admin-topbar .admin-header-actions' in style_css

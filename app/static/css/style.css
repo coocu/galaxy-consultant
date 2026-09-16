@@ -299,7 +299,8 @@ a { color: inherit; text-decoration: none; }
   align-items: stretch;
 }
 
-.viewer-topbar {
+.viewer-topbar,
+.admin-topbar {
   align-items: flex-start;
 }
 
@@ -435,11 +436,11 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 640px) {
   .app-shell { padding: 16px; }
   .topbar { flex-direction: column; }
-  .topbar.viewer-topbar { flex-direction: row; align-items: flex-start; }
-  .topbar.viewer-topbar .admin-header-actions { width: auto; justify-content: flex-end; }
-  .topbar.viewer-topbar .btn { width: auto; }
+  .topbar.viewer-topbar, .topbar.admin-topbar { flex-direction: row; align-items: flex-start; }
+  .topbar.viewer-topbar .admin-header-actions, .topbar.admin-topbar .admin-header-actions { width: auto; justify-content: flex-end; }
+  .topbar.viewer-topbar .btn, .topbar.admin-topbar .btn { width: auto; }
   .btn { width: 100%; }
-  .topbar.viewer-topbar .btn, .topbar.viewer-topbar .viewer-gear { width: 50px; }
+  .topbar.viewer-topbar .btn, .topbar.viewer-topbar .viewer-gear, .topbar.admin-topbar .btn, .topbar.admin-topbar .viewer-gear { width: 50px; }
   .search-row, .manage-row, .manage-store { grid-template-columns: 1fr; display: grid; }
   .store-item { align-items: flex-start; flex-direction: column; }
   .service-head { align-items: flex-start; flex-direction: column; }

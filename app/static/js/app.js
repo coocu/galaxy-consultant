@@ -24,6 +24,7 @@ const appState = {
   adminAuthenticated: false,
   modalOpen: false,
   viewerSettingsOpen: null,
+  adminSettingsOpen: false,
   managementUnlocked: false,
   voiceEnabled: localStorage.getItem(VOICE_STORAGE) !== "0",
   pushSupported: false,
@@ -184,9 +185,7 @@ function renderServiceChoice(mode, selectedStore) {
     return `<button class="btn ${buttonClass}" data-action="${action}" data-service="${serviceType}">${escapeHtml(label)}</button>`;
   });
 
-  if (mode !== "admin") {
-    serviceButtons.push(`<button class="btn btn-green" data-action="${action}" data-service="${INTEGRATED_SERVICE}">통합보기</button>`);
-  }
+  serviceButtons.push(`<button class="btn btn-green" data-action="${action}" data-service="${INTEGRATED_SERVICE}">통합보기</button>`);
 
   return `
     <section class="layout-card">
@@ -219,6 +218,40 @@ function renderViewerSettingsModal(scope) {
           <button class="btn btn-primary" type="button" data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button>
           <button class="btn btn-ghost" type="button" data-action="${changeServiceAction}">업무 변경</button>
           <button class="btn btn-ghost" type="button" data-action="${changeStoreAction}">매장 변경</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderAdminGear() {
+  return `<button class="viewer-gear admin-gear" type="button" data-action="openAdminSettings" aria-label="관리자 설정">⚙</button>`;
+}
+
+function renderAdminSettingsModal() {
+  if (!appState.adminSettingsOpen) return "";
+  const selectedStore = appState.selectedAdminStore;
+  const selectedService = appState.selectedAdminService;
+  const customerUrl = selectedStore
+    ? `/customer?store_id=${selectedStore.id}${selectedService ? `&service_type=${selectedService}` : ""}`
+    : "/customer";
+  const pushButton = selectedStore ? renderPushControl(false) : "";
+
+  return `
+    <div class="modal-backdrop" data-action="closeAdminSettings">
+      <section class="modal viewer-settings-modal admin-settings-modal" role="dialog" aria-modal="true" aria-label="관리자 설정" data-action="stopModalClose">
+        <div class="modal-head">
+          <div class="modal-title">관리자 설정</div>
+          <button class="close-btn" type="button" data-action="closeAdminSettings">×</button>
+        </div>
+        <div class="viewer-settings-actions">
+          ${pushButton}
+          ${selectedStore ? `<a class="btn btn-ghost" href="${customerUrl}" target="_blank" rel="noopener">고객화면</a>` : ""}
+          ${selectedService ? `<button class="btn btn-ghost" type="button" data-action="changeAdminService">업무 변경</button>` : ""}
+          ${selectedStore ? `<button class="btn btn-ghost" type="button" data-action="changeAdminStore">매장 변경</button>` : ""}
+          <button class="btn btn-ghost" type="button" data-action="openManage">매장관리</button>
+          <button class="btn btn-danger" type="button" data-action="logoutAdmin">로그아웃</button>
+          <button class="btn btn-ghost" type="button" data-link="/">처음으로</button>
         </div>
       </section>
     </div>
@@ -350,7 +383,8 @@ function renderAdmin() {
       ${headerHtml(
         "관리자",
         "관리할 매장을 선택하세요.",
-        `<button class="btn btn-ghost btn-small" data-action="openManage">⚙ 매장관리</button><button class="btn btn-ghost btn-small" data-action="logoutAdmin">로그아웃</button><button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`
+        renderAdminGear(),
+        "admin-topbar"
       )}
       <section class="layout-card">
         <div class="search-row">
@@ -359,6 +393,7 @@ function renderAdmin() {
         </div>
         <div class="store-list">${renderStoreList(appState.adminStores.filter((store) => store.is_active), "selectAdminStore")}</div>
       </section>
+      ${renderAdminSettingsModal()}
       ${renderManageModal()}
     `;
     return;
@@ -369,28 +404,51 @@ function renderAdmin() {
       ${headerHtml(
         appState.selectedAdminStore.name,
         "갤럭시 컨설턴트와 구매상담을 따로 선택합니다.",
-        `<button class="btn btn-ghost btn-small" data-action="changeAdminStore">매장 변경</button>${renderPushControl()}<button class="btn btn-ghost btn-small" data-action="openManage">⚙ 매장관리</button><button class="btn btn-ghost btn-small" data-action="logoutAdmin">로그아웃</button>`
+        renderAdminGear(),
+        "admin-topbar"
       )}
       ${renderPushNotice()}
       ${renderServiceChoice("admin", appState.selectedAdminStore)}
+      ${renderAdminSettingsModal()}
       ${renderManageModal()}
     `;
     return;
   }
 
-  const meta = serviceMeta(appState.selectedAdminService);
+  const isIntegratedAdmin = isIntegratedView(appState.selectedAdminService);
+  const selectedAdminTitle = isIntegratedAdmin
+    ? `${appState.selectedAdminStore.name} · 통합보기`
+    : `${appState.selectedAdminStore.name} · ${serviceMeta(appState.selectedAdminService).admin_label}`;
+  const selectedAdminSubtitle = isIntegratedAdmin
+    ? "갤럭시 컨설턴트와 구매상담을 함께 호출합니다."
+    : "선택한 업무만 호출합니다.";
   const customerUrl = `/customer?store_id=${appState.selectedAdminStore.id}&service_type=${appState.selectedAdminService}`;
   $app.innerHTML = `
     ${headerHtml(
-      `${appState.selectedAdminStore.name} · ${meta.admin_label}`,
-      "선택한 업무만 호출합니다.",
-      `${renderPushControl()}<a class="btn btn-ghost btn-small" href="${customerUrl}" target="_blank" rel="noopener">고객화면</a><button class="btn btn-ghost btn-small" data-action="changeAdminService">업무 변경</button><button class="btn btn-ghost btn-small" data-action="changeAdminStore">매장 변경</button><button class="btn btn-ghost btn-small" data-action="openManage">⚙ 매장관리</button><button class="btn btn-ghost btn-small" data-action="logoutAdmin">로그아웃</button>`
+      selectedAdminTitle,
+      selectedAdminSubtitle,
+      renderAdminGear(),
+      "admin-topbar"
     )}
     ${renderPushNotice()}
-    <section class="single-service-wrap">
-      ${renderAdminServiceCard(appState.selectedAdminService)}
-    </section>
+    ${renderAdminCallBody(appState.selectedAdminService)}
+    ${renderAdminSettingsModal()}
     ${renderManageModal()}
+  `;
+}
+
+function renderAdminCallBody(selectedService) {
+  if (isIntegratedView(selectedService)) {
+    return `
+      <section class="integrated-service-wrap">
+        ${SERVICE_ORDER.map((serviceType) => renderAdminServiceCard(serviceType)).join("")}
+      </section>
+    `;
+  }
+  return `
+    <section class="single-service-wrap">
+      ${renderAdminServiceCard(selectedService)}
+    </section>
   `;
 }
 
@@ -442,14 +500,15 @@ function isPushSupported() {
   return appState.pushSupported;
 }
 
-function renderPushControl() {
+function renderPushControl(compact = true) {
   if (!appState.selectedAdminStore) return "";
+  const sizeClass = compact ? " btn-small" : "";
   if (!isPushSupported()) {
-    return `<button class="btn btn-ghost btn-small" type="button" disabled>알림 미지원</button>`;
+    return `<button class="btn btn-ghost${sizeClass}" type="button" disabled>알림 미지원</button>`;
   }
   const label = appState.pushSubscribed ? "발급 알림 켜짐" : "발급 알림 켜기";
   const action = appState.pushSubscribed ? "disablePush" : "enablePush";
-  return `<button class="btn btn-primary btn-small" type="button" data-action="${action}" ${appState.pushBusy ? "disabled" : ""}>${label}</button>`;
+  return `<button class="btn btn-primary${sizeClass}" type="button" data-action="${action}" ${appState.pushBusy ? "disabled" : ""}>${label}</button>`;
 }
 
 function renderPushNotice() {
@@ -886,7 +945,7 @@ async function editStore(storeId) {
 async function deleteStore(storeId) {
   const store = appState.adminStores.find((item) => item.id === storeId);
   if (!store) return;
-  const ok = window.confirm(`${store.name} 매장을 삭제 처리할까요?\n기존 기록은 보존되고 고객 화면에서만 숨겨집니다.`);
+  const ok = window.confirm(`${store.name} 매장 카테고리를 삭제할까요?\n해당 매장의 번호표/호출/알림 데이터도 같이 삭제됩니다.`);
   if (!ok) return;
   await apiFetch(`/api/admin/stores/${storeId}`, { method: "DELETE", admin: true });
   if (appState.selectedAdminStore?.id === storeId) {
@@ -1093,6 +1152,16 @@ $app.addEventListener("click", (event) => {
   const scope = target.dataset.scope;
 
 
+  if (action === "openAdminSettings") {
+    appState.adminSettingsOpen = true;
+    renderAdmin();
+  }
+
+  if (action === "closeAdminSettings") {
+    appState.adminSettingsOpen = false;
+    renderAdmin();
+  }
+
   if (action === "openViewerSettings") {
     appState.viewerSettingsOpen = scope === "display" ? "display" : "customer";
     if (appState.route === "/display") {
@@ -1164,6 +1233,7 @@ $app.addEventListener("click", (event) => {
   }
 
   if (action === "logoutAdmin") {
+    appState.adminSettingsOpen = false;
     safeRun(async () => {
       await disablePushNotifications({ silent: true });
       await apiFetch("/api/admin/logout", { method: "POST" });
@@ -1184,6 +1254,7 @@ $app.addEventListener("click", (event) => {
   }
 
   if (action === "selectAdminStore") {
+    appState.adminSettingsOpen = false;
     appState.selectedAdminStore = appState.adminStores.find((store) => store.id === storeId) || null;
     appState.selectedAdminService = null;
     safeRun(async () => {
@@ -1194,6 +1265,7 @@ $app.addEventListener("click", (event) => {
   }
 
   if (action === "selectAdminService") {
+    appState.adminSettingsOpen = false;
     appState.selectedAdminService = serviceType;
     safeRun(async () => {
       await loadAdminState();
@@ -1202,12 +1274,14 @@ $app.addEventListener("click", (event) => {
   }
 
   if (action === "changeAdminService") {
+    appState.adminSettingsOpen = false;
     clearPolling();
     appState.selectedAdminService = null;
     renderAdmin();
   }
 
   if (action === "changeAdminStore") {
+    appState.adminSettingsOpen = false;
     clearPolling();
     appState.selectedAdminStore = null;
     appState.selectedAdminService = null;
@@ -1244,6 +1318,7 @@ $app.addEventListener("click", (event) => {
   }
 
   if (action === "openManage") {
+    appState.adminSettingsOpen = false;
     clearPolling();
     appState.modalOpen = true;
     appState.managementUnlocked = false;
