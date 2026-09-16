@@ -12,6 +12,9 @@ class Settings:
     seed_default_stores: bool
     testing: bool
     poket_auth_check_url: str
+    vapid_public_key: str
+    vapid_private_key: str
+    vapid_subject: str
 
 
 def normalize_database_url(raw_url: str | None) -> str:
@@ -43,9 +46,28 @@ def load_settings(overrides: dict | None = None) -> Settings:
         or "https://poketserver.onrender.com/app/check"
     )
 
+    vapid_public_key = str(
+        overrides.get("VAPID_PUBLIC_KEY")
+        or os.environ.get("VAPID_PUBLIC_KEY")
+        or ""
+    ).strip()
+    vapid_private_key = str(
+        overrides.get("VAPID_PRIVATE_KEY")
+        or os.environ.get("VAPID_PRIVATE_KEY")
+        or ""
+    ).strip()
+    vapid_subject = str(
+        overrides.get("VAPID_SUBJECT")
+        or os.environ.get("VAPID_SUBJECT")
+        or "mailto:code_note95@naver.com"
+    ).strip()
+
     return Settings(
         database_url=database_url,
         seed_default_stores=bool(seed_default),
         testing=testing,
         poket_auth_check_url=poket_auth_check_url,
+        vapid_public_key=vapid_public_key,
+        vapid_private_key=vapid_private_key,
+        vapid_subject=vapid_subject,
     )

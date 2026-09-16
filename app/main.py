@@ -13,7 +13,7 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -24,6 +24,12 @@ from .backup import make_backup_zip, restore_from_zip_bytes
 from .config import Settings, load_settings
 from .database import Base, build_engine, build_session_factory, get_db
 from .models import Store
+from .push import (
+    disable_push_subscription,
+    push_config_payload,
+    save_push_subscription,
+    send_ticket_push_notifications,
+)
 from .services import (
     CALL_DIRECT,
     CALL_NORMAL,
@@ -77,6 +83,25 @@ class CallBody(BaseModel):
 class ResetBody(BaseModel):
     store_id: int = Field(gt=0)
     service_type: str
+
+
+class PushKeysBody(BaseModel):
+    p256dh: str = Field(min_length=1)
+    auth: str = Field(min_length=1)
+
+
+class PushSubscriptionBody(BaseModel):
+    endpoint: str = Field(min_length=1)
+    keys: PushKeysBody
+
+
+class PushSubscribeBody(BaseModel):
+    store_id: int = Field(gt=0)
+    subscription: PushSubscriptionBody
+
+
+class PushUnsubscribeBody(BaseModel):
+    endpoint: str = Field(min_length=1)
 
 
 def _cleanup_admin_sessions(app: FastAPI) -> None:
@@ -205,8 +230,20 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     app.state.admin_sessions = {}
     app.state.admin_session_lock = threading.RLock()
     app.state.auth_checker = test_config.get("AUTH_CHECKER")
+    app.state.push_sender = test_config.get("PUSH_SENDER")
 
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+    @app.get("/sw.js", include_in_schema=False)
+    def service_worker() -> FileResponse:
+        return FileResponse(
+            BASE_DIR / "static" / "sw.js",
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-cache",
+                "Service-Worker-Allowed": "/",
+            },
+        )
 
     @app.get("/", response_class=HTMLResponse)
     @app.get("/customer", response_class=HTMLResponse)
@@ -305,12 +342,13 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         return {"store": store_to_dict(store), "message": "매장이 비활성화되었습니다"}
 
     @app.post("/api/tickets", status_code=201)
-    def create_ticket(body: TicketCreateBody, db: Session = Depends(get_db)) -> dict[str, object]:
+    def create_ticket(body: TicketCreateBody, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
         try:
             ticket = issue_ticket(db, body.store_id, body.service_type)
         except ValueError as exc:
             raise api_error(exc) from exc
-        return {"ticket": ticket_to_dict(ticket)}
+        push_result = send_ticket_push_notifications(request.app, db, ticket)
+        return {"ticket": ticket_to_dict(ticket), "push": push_result}
 
     @app.get("/api/state/{store_id}")
     def state(store_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
@@ -353,6 +391,36 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         except ValueError as exc:
             raise api_error(exc) from exc
         return {"calls": list_calls_after(db, store_id, after_id)}
+
+    @app.get("/api/push/vapid-public-key", dependencies=[Depends(require_admin)])
+    def push_public_key(request: Request) -> dict[str, object]:
+        return push_config_payload(request.app.state.settings)
+
+    @app.post("/api/admin/push/subscribe", dependencies=[Depends(require_admin)])
+    def subscribe_push(body: PushSubscribeBody, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+        try:
+            subscription = save_push_subscription(
+                db,
+                store_id=body.store_id,
+                subscription=body.subscription.model_dump(),
+                user_agent=request.headers.get("user-agent", ""),
+            )
+        except ValueError as exc:
+            raise api_error(exc) from exc
+        return {
+            "ok": True,
+            "enabled": True,
+            "store_id": subscription.store_id,
+            "subscription_id": subscription.id,
+        }
+
+    @app.post("/api/admin/push/unsubscribe", dependencies=[Depends(require_admin)])
+    def unsubscribe_push(body: PushUnsubscribeBody, db: Session = Depends(get_db)) -> dict[str, object]:
+        try:
+            disabled = disable_push_subscription(db, body.endpoint)
+        except ValueError as exc:
+            raise api_error(exc) from exc
+        return {"ok": True, "disabled": disabled}
 
     @app.get("/api/admin/backup", dependencies=[Depends(require_admin)])
     def backup(db: Session = Depends(get_db)) -> Response:

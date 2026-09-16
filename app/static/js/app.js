@@ -24,6 +24,10 @@ const appState = {
   modalOpen: false,
   managementUnlocked: false,
   voiceEnabled: localStorage.getItem(VOICE_STORAGE) !== "0",
+  pushSupported: false,
+  pushSubscribed: false,
+  pushBusy: false,
+  pushMessage: "",
   lastCustomerCallId: 0,
   lastDisplayCallId: 0,
   pollingTimer: null,
@@ -135,7 +139,7 @@ function renderHome() {
       <section class="home-card">
         <div class="home-logo">C</div>
         <h1 class="brand-title">직원 호출</h1>
-        <p class="sub-title">삼성스토어 대기 시스템.</p>
+        <p class="sub-title">고객 호출 화면과 관리자 호출을 매장별로 분리합니다.</p>
         <div class="home-buttons">
           <button class="btn btn-primary" data-link="/customer">고객</button>
           <button class="btn btn-ghost" data-link="/admin">관리자</button>
@@ -293,8 +297,9 @@ function renderAdmin() {
       ${headerHtml(
         appState.selectedAdminStore.name,
         "갤럭시 컨설턴트와 구매상담을 따로 선택합니다.",
-        `<button class="btn btn-ghost btn-small" data-action="changeAdminStore">매장 변경</button><button class="btn btn-ghost btn-small" data-action="openManage">⚙ 매장관리</button><button class="btn btn-ghost btn-small" data-action="logoutAdmin">로그아웃</button>`
+        `<button class="btn btn-ghost btn-small" data-action="changeAdminStore">매장 변경</button>${renderPushControl()}<button class="btn btn-ghost btn-small" data-action="openManage">⚙ 매장관리</button><button class="btn btn-ghost btn-small" data-action="logoutAdmin">로그아웃</button>`
       )}
+      ${renderPushNotice()}
       ${renderServiceChoice("admin", appState.selectedAdminStore)}
       ${renderManageModal()}
     `;
@@ -307,8 +312,9 @@ function renderAdmin() {
     ${headerHtml(
       `${appState.selectedAdminStore.name} · ${meta.admin_label}`,
       "선택한 업무만 호출합니다.",
-      `<a class="btn btn-ghost btn-small" href="${customerUrl}" target="_blank" rel="noopener">고객화면</a><button class="btn btn-ghost btn-small" data-action="changeAdminService">업무 변경</button><button class="btn btn-ghost btn-small" data-action="changeAdminStore">매장 변경</button><button class="btn btn-ghost btn-small" data-action="openManage">⚙ 매장관리</button><button class="btn btn-ghost btn-small" data-action="logoutAdmin">로그아웃</button>`
+      `${renderPushControl()}<a class="btn btn-ghost btn-small" href="${customerUrl}" target="_blank" rel="noopener">고객화면</a><button class="btn btn-ghost btn-small" data-action="changeAdminService">업무 변경</button><button class="btn btn-ghost btn-small" data-action="changeAdminStore">매장 변경</button><button class="btn btn-ghost btn-small" data-action="openManage">⚙ 매장관리</button><button class="btn btn-ghost btn-small" data-action="logoutAdmin">로그아웃</button>`
     )}
+    ${renderPushNotice()}
     <section class="single-service-wrap">
       ${renderAdminServiceCard(appState.selectedAdminService)}
     </section>
@@ -353,6 +359,152 @@ function renderAdminServiceCard(serviceType) {
       </div>
     </article>
   `;
+}
+
+function isPushSupported() {
+  appState.pushSupported = Boolean(
+    "serviceWorker" in navigator
+    && "PushManager" in window
+    && "Notification" in window
+  );
+  return appState.pushSupported;
+}
+
+function renderPushControl() {
+  if (!appState.selectedAdminStore) return "";
+  if (!isPushSupported()) {
+    return `<button class="btn btn-ghost btn-small" type="button" disabled>알림 미지원</button>`;
+  }
+  const label = appState.pushSubscribed ? "발급 알림 켜짐" : "발급 알림 켜기";
+  const action = appState.pushSubscribed ? "disablePush" : "enablePush";
+  return `<button class="btn btn-primary btn-small" type="button" data-action="${action}" ${appState.pushBusy ? "disabled" : ""}>${label}</button>`;
+}
+
+function renderPushNotice() {
+  if (!appState.selectedAdminStore || !appState.pushMessage) return "";
+  return `<div class="notice mt-1">${escapeHtml(appState.pushMessage)}</div>`;
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replaceAll("-", "+").replaceAll("_", "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i += 1) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+async function getPushRegistration({ create = false } = {}) {
+  if (!isPushSupported()) return null;
+  let registration = await navigator.serviceWorker.getRegistration("/");
+  if (!registration && create) {
+    registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+  }
+  return registration;
+}
+
+async function getCurrentPushSubscription() {
+  const registration = await getPushRegistration({ create: false });
+  if (!registration) return null;
+  return registration.pushManager.getSubscription();
+}
+
+async function refreshPushStatus() {
+  appState.pushMessage = "";
+  if (!isPushSupported() || Notification.permission !== "granted") {
+    appState.pushSubscribed = false;
+    return;
+  }
+  const subscription = await getCurrentPushSubscription();
+  appState.pushSubscribed = Boolean(subscription);
+}
+
+async function savePushSubscriptionForSelectedStore(subscription) {
+  if (!appState.selectedAdminStore || !subscription) return;
+  await apiFetch("/api/admin/push/subscribe", {
+    method: "POST",
+    admin: true,
+    json: {
+      store_id: appState.selectedAdminStore.id,
+      subscription: subscription.toJSON(),
+    },
+  });
+}
+
+async function syncExistingPushToSelectedStore() {
+  if (!appState.selectedAdminStore || !isPushSupported() || Notification.permission !== "granted") {
+    appState.pushSubscribed = false;
+    return;
+  }
+  const subscription = await getCurrentPushSubscription();
+  if (!subscription) {
+    appState.pushSubscribed = false;
+    return;
+  }
+  await savePushSubscriptionForSelectedStore(subscription);
+  appState.pushSubscribed = true;
+  appState.pushMessage = `${appState.selectedAdminStore.name} 번호표 발급 알림이 연결되었습니다.`;
+}
+
+async function enablePushNotifications() {
+  if (!appState.selectedAdminStore) {
+    throw new Error("먼저 매장을 선택하세요");
+  }
+  if (!isPushSupported()) {
+    throw new Error("이 브라우저는 백그라운드 푸시 알림을 지원하지 않습니다");
+  }
+
+  appState.pushBusy = true;
+  renderAdmin();
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      appState.pushSubscribed = false;
+      appState.pushMessage = "브라우저 알림 권한이 허용되지 않았습니다.";
+      return;
+    }
+
+    const config = await apiFetch("/api/push/vapid-public-key", { admin: true });
+    if (!config.enabled || !config.publicKey) {
+      throw new Error(config.message || "서버 푸시 키 설정이 필요합니다");
+    }
+
+    const registration = await getPushRegistration({ create: true });
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(config.publicKey),
+      });
+    }
+
+    await savePushSubscriptionForSelectedStore(subscription);
+    appState.pushSubscribed = true;
+    appState.pushMessage = `${appState.selectedAdminStore.name} 번호표 발급 알림이 켜졌습니다.`;
+  } finally {
+    appState.pushBusy = false;
+    renderAdmin();
+  }
+}
+
+async function disablePushNotifications({ silent = false } = {}) {
+  if (!isPushSupported()) return;
+  const subscription = await getCurrentPushSubscription();
+  if (subscription) {
+    await apiFetch("/api/admin/push/unsubscribe", {
+      method: "POST",
+      admin: true,
+      json: { endpoint: subscription.endpoint },
+    }).catch(() => null);
+    await subscription.unsubscribe().catch(() => false);
+  }
+  appState.pushSubscribed = false;
+  if (!silent) {
+    appState.pushMessage = "번호표 발급 알림을 껐습니다.";
+    renderAdmin();
+  }
 }
 
 function renderManageModal() {
@@ -541,6 +693,7 @@ async function adminLogin(key) {
   await apiFetch("/api/admin/login", { method: "POST", json: { key } });
   appState.adminAuthenticated = true;
   await loadAdminStores();
+  await refreshPushStatus();
   renderAdmin();
 }
 
@@ -797,6 +950,7 @@ async function initAdmin() {
     appState.adminAuthenticated = Boolean(status.authenticated);
     if (appState.adminAuthenticated) {
       await loadAdminStores();
+      await refreshPushStatus();
     }
   } catch (_error) {
     appState.adminAuthenticated = false;
@@ -891,11 +1045,14 @@ $app.addEventListener("click", (event) => {
 
   if (action === "logoutAdmin") {
     safeRun(async () => {
+      await disablePushNotifications({ silent: true });
       await apiFetch("/api/admin/logout", { method: "POST" });
       appState.adminAuthenticated = false;
       appState.selectedAdminStore = null;
       appState.selectedAdminService = null;
       appState.adminState = null;
+      appState.pushSubscribed = false;
+      appState.pushMessage = "";
       renderAdmin();
     });
   }
@@ -911,6 +1068,8 @@ $app.addEventListener("click", (event) => {
     appState.selectedAdminService = null;
     safeRun(async () => {
       await loadAdminState();
+      await syncExistingPushToSelectedStore();
+      renderAdmin();
     });
   }
 
@@ -933,6 +1092,7 @@ $app.addEventListener("click", (event) => {
     appState.selectedAdminStore = null;
     appState.selectedAdminService = null;
     appState.adminState = null;
+    appState.pushMessage = "";
     renderAdmin();
   }
 
@@ -953,6 +1113,14 @@ $app.addEventListener("click", (event) => {
 
   if (action === "resetService") {
     safeRun(() => resetSelectedService(serviceType));
+  }
+
+  if (action === "enablePush") {
+    safeRun(enablePushNotifications);
+  }
+
+  if (action === "disablePush") {
+    safeRun(() => disablePushNotifications());
   }
 
   if (action === "openManage") {

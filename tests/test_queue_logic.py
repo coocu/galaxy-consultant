@@ -46,7 +46,9 @@ def test_issue_ticket_starts_at_one_and_isolated_by_service(app_and_store):
 
     state = get_store_state(db, store_id)
     assert state["services"][SERVICE_SIMPLE]["waiting_count"] == 2
+    assert state["services"][SERVICE_SIMPLE]["next_waiting_number"] == 1
     assert state["services"][SERVICE_PURCHASE]["waiting_count"] == 1
+    assert state["services"][SERVICE_PURCHASE]["next_waiting_number"] == 1
     db.close()
 
 
@@ -70,11 +72,14 @@ def test_call_recall_direct_and_reset_change_state(app_and_store):
     state = get_store_state(db, store_id)
     assert state["services"][SERVICE_SIMPLE]["current_number"] == 9
     assert state["services"][SERVICE_SIMPLE]["waiting_count"] == 1
+    assert state["services"][SERVICE_SIMPLE]["next_waiting_number"] == 2
 
     reset_service(db, store_id, SERVICE_SIMPLE)
     state_after_reset = get_store_state(db, store_id)
     assert state_after_reset["services"][SERVICE_SIMPLE]["current_number"] is None
     assert state_after_reset["services"][SERVICE_SIMPLE]["waiting_count"] == 0
+    assert state_after_reset["services"][SERVICE_SIMPLE]["next_number"] == 1
+    assert state_after_reset["services"][SERVICE_SIMPLE]["next_waiting_number"] is None
 
     new_ticket = issue_ticket(db, store_id, SERVICE_SIMPLE)
     assert new_ticket.ticket_number == 1

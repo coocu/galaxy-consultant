@@ -416,3 +416,9 @@ a { color: inherit; text-decoration: none; }
   margin-left: auto;
   margin-right: auto;
 }
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+  box-shadow: none;
+}

@@ -270,13 +270,17 @@ def get_store_state(db: Session, store_id: int) -> dict[str, Any]:
     services: dict[str, dict[str, Any]] = {}
     for service_type in (SERVICE_SIMPLE, SERVICE_PURCHASE):
         counter = get_or_create_counter(db, store_id, service_type)
+        waiting_filter = (
+            Ticket.store_id == store_id,
+            Ticket.service_type == service_type,
+            Ticket.round_no == counter.round_no,
+            Ticket.status == "waiting",
+        )
         waiting_count = db.execute(
-            select(func.count(Ticket.id)).where(
-                Ticket.store_id == store_id,
-                Ticket.service_type == service_type,
-                Ticket.round_no == counter.round_no,
-                Ticket.status == "waiting",
-            )
+            select(func.count(Ticket.id)).where(*waiting_filter)
+        ).scalar_one()
+        next_waiting_number = db.execute(
+            select(func.min(Ticket.ticket_number)).where(*waiting_filter)
         ).scalar_one()
         waiting_tickets = get_waiting_tickets(db, store_id, service_type, counter.round_no)
         services[service_type] = {
@@ -285,6 +289,7 @@ def get_store_state(db: Session, store_id: int) -> dict[str, Any]:
             "current_number": counter.current_number,
             "waiting_count": int(waiting_count),
             "next_number": counter.next_number,
+            "next_waiting_number": next_waiting_number,
             "round_no": counter.round_no,
             "waiting_tickets": [ticket_to_dict(ticket) for ticket in waiting_tickets],
         }
