@@ -111,15 +111,6 @@ function renderWaitingStatus(waitingCount) {
   return `<span class="waiting-status"><img src="${icon}" alt="" class="waiting-status-icon"><strong>${label}</strong></span>`;
 }
 
-function nowLabel() {
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  const hour = String(now.getHours()).padStart(2, "0");
-  const minute = String(now.getMinutes()).padStart(2, "0");
-  return `${month}/${day}일  ${hour}:${minute}`;
-}
-
 function clearPolling() {
   if (appState.pollingTimer) {
     window.clearInterval(appState.pollingTimer);
@@ -441,7 +432,6 @@ function renderCustomerDisplayServiceCard(serviceType, scope = "customer") {
             <div class="service-title">${escapeHtml(meta.customer_label)} 코너</div>
           </div>
         </div>
-        <div class="now-time">${nowLabel()}</div>
       </div>
       <div class="current-box">
         ${visibleNumber ? `<div class="current-number ${theme}">${visibleNumber}</div>` : `<div class="current-number wait">대기중</div>`}
@@ -531,7 +521,7 @@ function renderAdminServiceCard(serviceType) {
   const theme = meta.theme;
   const current = serviceState?.current_number;
   const waitingCount = serviceState?.waiting_count ?? 0;
-  const nextNumber = serviceState?.next_number ?? (serviceType === "purchase_consult" ? 101 : 1);
+  const nextNumber = serviceState?.next_number ?? 1;
   return `
     <article class="service-card ${theme}">
       <div class="service-head">
@@ -542,7 +532,6 @@ function renderAdminServiceCard(serviceType) {
             <div class="service-title">${escapeHtml(meta.admin_label)}</div>
           </div>
         </div>
-        <div class="now-time">${nowLabel()}</div>
       </div>
 
       <div class="current-box">
@@ -1368,12 +1357,7 @@ function playCallAnnouncement(call) {
   speakSilentCallTrigger(text);
 
   const ticketNumber = Number(call.ticket_number);
-  if (!Number.isInteger(ticketNumber)) return;
-
-  const hasNumberAudio =
-    (call.service_type === "simple_service" && ticketNumber >= 1 && ticketNumber <= 99) ||
-    (call.service_type === "purchase_consult" && ticketNumber >= 101 && ticketNumber <= 199);
-  if (!hasNumberAudio) return;
+  if (!Number.isInteger(ticketNumber) || ticketNumber < 1 || ticketNumber > 99) return;
 
   const folder = CALL_AUDIO_FOLDERS[call.service_type];
   if (!folder || !callAudio) return;
@@ -1887,6 +1871,7 @@ $closeOverlay.addEventListener("click", () => {
 });
 
 window.addEventListener("beforeunload", clearPolling);
+
 
 (async function bootstrap() {
   try {
