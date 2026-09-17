@@ -345,7 +345,7 @@ function renderCustomer() {
     $app.innerHTML = `
       ${headerHtml(
         selected.name,
-        "간단서비스와 구매문의를 따로 선택합니다.",
+        "이용하실 서비스를 선택해주세요.",
         actions
       )}
       ${renderServiceChoice("customer", selected)}
@@ -448,8 +448,8 @@ function renderAdmin() {
     ? `${appState.selectedAdminStore.name} · 통합보기`
     : `${appState.selectedAdminStore.name} · ${serviceMeta(appState.selectedAdminService).admin_label}`;
   const selectedAdminSubtitle = isIntegratedAdmin
-    ? "방문해 주셔서 감사합니다."
-    : "방문해 주셔서 감사합니다.";
+    ? "안녕하세요 관리자님, 오늘도 행복한 하루 되세요."
+    : "안녕하세요 관리자님, 오늘도 행복한 하루 되세요.";
   const customerUrl = `/customer?store_id=${appState.selectedAdminStore.id}&service_type=${appState.selectedAdminService}`;
   $app.innerHTML = `
     ${headerHtml(
@@ -813,9 +813,9 @@ function renderManageModal() {
 
 function renderManageUnlock() {
   return `
-    <p class="sub-title">매장 관리는 kiosk가 포함된 인증키가 필요합니다.</p>
+    <p class="sub-title">매장 관리전용 인증키를 입력해 주세요.</p>
     <div class="search-row mt-2">
-      <input id="manageKey" class="input" type="password" placeholder="kiosk 인증키" />
+      <input id="manageKey" class="input" type="password" placeholder="kiosk 매장관리 인증키" />
       <button class="btn btn-primary" data-action="unlockManage">확인</button>
     </div>
   `;
@@ -886,7 +886,7 @@ function renderDisplay() {
     $app.innerHTML = `
       ${headerHtml(
         selected.name,
-        "간단서비스와 구매문의를 따로 선택합니다.",
+        "이용하실 서비스를 선택해주세요.",
         `<button class="btn btn-ghost btn-small" data-action="changeDisplayStore">매장 변경</button>`
       )}
       ${renderServiceChoice("display", selected)}
@@ -899,8 +899,8 @@ function renderDisplay() {
     ? `${selected.name} · 통합보기`
     : `${selected.name} · ${serviceMeta(selectedService).customer_label}`;
   const subtitle = isIntegratedView(selectedService)
-    ? "간단서비스와 구매문의를 함께 표시합니다."
-    : "관리자가 호출하면 이 화면 중앙에 크게 표시됩니다.";
+    ? "번호가 호출되면 화면에 팝업이 표시됩니다."
+    : "번호가 호출되면 화면에 팝업이 표시됩니다.";
 
   $app.innerHTML = `
     ${headerHtml(

@@ -308,7 +308,7 @@ def _verify_admin_key(app: FastAPI, code: str) -> None:
 def _verify_manage_key(app: FastAPI, code: str) -> None:
     auth_key = (code or "").strip()
     if "kiosk" not in auth_key.lower():
-        raise HTTPException(status_code=401, detail="매장 관리는 kiosk가 포함된 인증키만 사용할 수 있습니다")
+        raise HTTPException(status_code=401, detail="매장 관리전용 인증키를 입력해 주세요")
     _verify_admin_key(app, auth_key)
 
 
