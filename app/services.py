@@ -25,7 +25,7 @@ SERVICE_META: dict[str, dict[str, str]] = {
     SERVICE_PURCHASE: {
         "customer_label": "구매 상담",
         "admin_label": "구매 상담",
-        "voice_label": "구매문 의",
+        "voice_label": "구매 문의",
         "theme": "red",
     },
 }
