@@ -4,6 +4,12 @@ const SERVICE_META = window.SERVICE_META || {};
 const VOICE_STORAGE = "codenote_staff_call_voice_enabled";
 const POPUP_VISIBLE_MS = 5000;
 const CALL_NUMBER_VISIBLE_MS = POPUP_VISIBLE_MS + 5000;
+const CALL_AUDIO_FOLDERS = {
+  simple_service: "simple",
+  purchase_consult: "sales",
+};
+const callAudio = "Audio" in window ? new Audio() : null;
+if (callAudio) callAudio.preload = "auto";
 
 const appState = {
   route: window.location.pathname,
@@ -26,6 +32,8 @@ const appState = {
   modalOpen: false,
   viewerSettingsOpen: null,
   adminSettingsOpen: false,
+  directCallKeypadService: null,
+  directCallKeypadValue: "",
   managementUnlocked: false,
   voiceEnabled: localStorage.getItem(VOICE_STORAGE) !== "0",
   pushSupported: false,
@@ -301,6 +309,32 @@ function renderAdminGear() {
   return `<button class="viewer-gear admin-gear" type="button" data-action="openAdminSettings" aria-label="관리자 설정">⚙</button>`;
 }
 
+function renderDirectCallKeypad() {
+  const serviceType = appState.directCallKeypadService;
+  if (!serviceType) return "";
+
+  const value = appState.directCallKeypadValue || "";
+  const digits = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+  return `
+    <div class="direct-call-keypad-backdrop" data-action="closeDirectCallKeypad">
+      <section class="direct-call-keypad" role="dialog" aria-modal="true" aria-label="지정호출 번호 입력" data-action="stopDirectCallKeypadClose">
+        <div class="direct-call-keypad-title">지정호출</div>
+        <div class="direct-call-keypad-display">${value || "번호 입력"}</div>
+        <div class="direct-call-keypad-grid">
+          ${digits.map((digit) => `<button type="button" class="direct-call-key" data-action="directCallDigit" data-digit="${digit}">${digit}</button>`).join("")}
+          <button type="button" class="direct-call-key direct-call-key-backspace" data-action="directCallBackspace" aria-label="한 자리 지우기">←</button>
+          <button type="button" class="direct-call-key" data-action="directCallDigit" data-digit="0">0</button>
+          <button type="button" class="direct-call-key direct-call-key-clear" data-action="directCallClear">지우기</button>
+        </div>
+        <div class="direct-call-keypad-actions">
+          <button type="button" class="btn btn-ghost" data-action="closeDirectCallKeypad">닫기</button>
+          <button type="button" class="btn btn-primary" data-action="submitDirectCallKeypad">호출</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function renderAdminSettingsModal() {
   if (!appState.adminSettingsOpen) return "";
   const selectedStore = appState.selectedAdminStore;
@@ -472,6 +506,7 @@ function renderAdmin() {
     ${renderPushNotice()}
     ${renderAdminCallBody(appState.selectedAdminService)}
     ${renderAdminSettingsModal()}
+    ${renderDirectCallKeypad()}
   `;
 }
 
@@ -1315,6 +1350,61 @@ function speak(text) {
   window.speechSynthesis.speak(utterance);
 }
 
+function speakSilentCallTrigger(text) {
+  if (!text || !("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(`..${text}`);
+  utterance.lang = "ko-KR";
+  utterance.rate = 0.92;
+  utterance.pitch = 1;
+  utterance.volume = 0;
+  window.speechSynthesis.speak(utterance);
+}
+
+function playCallAnnouncement(call) {
+  if (!call) return;
+
+  const text = call.speech_text || "";
+  speakSilentCallTrigger(text);
+
+  const ticketNumber = Number(call.ticket_number);
+  if (!Number.isInteger(ticketNumber) || ticketNumber < 1 || ticketNumber > 99) return;
+
+  const folder = CALL_AUDIO_FOLDERS[call.service_type];
+  if (!folder || !callAudio) return;
+
+  callAudio.pause();
+  callAudio.src = `/static/sounds/${folder}/${ticketNumber}.mp3`;
+  callAudio.currentTime = 0;
+  callAudio.volume = 1;
+  const playPromise = callAudio.play();
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise.catch(() => {});
+  }
+}
+
+function primeCallAudio() {
+  if (!callAudio) return;
+  callAudio.pause();
+  callAudio.src = "/static/sounds/simple/1.mp3";
+  callAudio.currentTime = 0;
+  callAudio.volume = 0;
+  const playPromise = callAudio.play();
+  if (playPromise && typeof playPromise.then === "function") {
+    playPromise
+      .then(() => {
+        callAudio.pause();
+        callAudio.currentTime = 0;
+        callAudio.volume = 1;
+      })
+      .catch(() => {
+        callAudio.volume = 1;
+      });
+  } else {
+    callAudio.volume = 1;
+  }
+}
+
 function getVisibleStore(scope) {
   return scope === "display" ? appState.visibleDisplayCalls : appState.visibleCustomerCalls;
 }
@@ -1361,7 +1451,7 @@ function showCallPopup(call, shouldSpeak) {
   $overlayMessage.textContent = `${meta.voice_label} 창구로 와주세요`;
   $overlay.classList.remove("hidden");
 
-  if (shouldSpeak) speak(call.speech_text);
+  if (shouldSpeak) playCallAnnouncement(call);
 
   if (appState.callTimer) window.clearTimeout(appState.callTimer);
   appState.callTimer = window.setTimeout(() => {
@@ -1618,14 +1708,50 @@ $app.addEventListener("click", (event) => {
   }
 
   if (action === "directCall") {
-    const value = window.prompt("호출할 번호를 입력하세요");
-    if (value === null) return;
-    const ticketNumber = Number(value);
-    if (!Number.isInteger(ticketNumber) || ticketNumber < 1) {
+    appState.directCallKeypadService = validServiceType(serviceType);
+    appState.directCallKeypadValue = "";
+    renderAdmin();
+  }
+
+  if (action === "stopDirectCallKeypadClose") {
+    event.stopPropagation();
+  }
+
+  if (action === "directCallDigit") {
+    const digit = target.dataset.digit || "";
+    if (/^\d$/.test(digit)) {
+      appState.directCallKeypadValue += digit;
+      renderAdmin();
+    }
+  }
+
+  if (action === "directCallBackspace") {
+    appState.directCallKeypadValue = appState.directCallKeypadValue.slice(0, -1);
+    renderAdmin();
+  }
+
+  if (action === "directCallClear") {
+    appState.directCallKeypadValue = "";
+    renderAdmin();
+  }
+
+  if (action === "closeDirectCallKeypad") {
+    appState.directCallKeypadService = null;
+    appState.directCallKeypadValue = "";
+    renderAdmin();
+  }
+
+  if (action === "submitDirectCallKeypad") {
+    const keypadService = appState.directCallKeypadService;
+    const ticketNumber = Number(appState.directCallKeypadValue);
+    if (!keypadService || !Number.isInteger(ticketNumber) || ticketNumber < 1) {
       alert("1 이상의 숫자를 입력하세요");
       return;
     }
-    safeRun(() => callService(serviceType, "direct", ticketNumber));
+    appState.directCallKeypadService = null;
+    appState.directCallKeypadValue = "";
+    renderAdmin();
+    safeRun(() => callService(keypadService, "direct", ticketNumber));
   }
 
   if (action === "resetService") {
@@ -1741,6 +1867,7 @@ $app.addEventListener("click", (event) => {
     appState.voiceEnabled = true;
     appState.viewerSettingsOpen = null;
     localStorage.setItem(VOICE_STORAGE, "1");
+    primeCallAudio();
     speak("호출 음성이 켜졌습니다.");
     if (appState.route === "/display") {
       renderDisplay();
