@@ -586,7 +586,262 @@ a { color: inherit; text-decoration: none; }
   }
 
   .viewer-topbar ~ .single-service-wrap .current-box {
-    min-height: clamp(280px, 32vh, 560px);
-    min-height: clamp(280px, 32dvh, 560px);
+    min-height: clamp(340px, 36vh, 620px);
+    min-height: clamp(340px, 36dvh, 620px);
+  }
+
+  .viewer-topbar ~ .single-service-wrap .service-card {
+    padding: clamp(28px, 4vw, 46px);
+  }
+
+  .viewer-topbar ~ .single-service-wrap .service-icon {
+    width: 70px;
+    height: 70px;
+    font-size: 32px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .service-small {
+    font-size: 18px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .service-title {
+    font-size: clamp(30px, 4vw, 42px);
+  }
+
+  .viewer-topbar ~ .single-service-wrap .current-number {
+    font-size: clamp(84px, 14vw, 150px);
+  }
+
+  .viewer-topbar ~ .single-service-wrap .current-number.wait {
+    font-size: clamp(58px, 8vw, 92px);
+  }
+
+  .viewer-topbar ~ .single-service-wrap .state-pill {
+    min-height: 104px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .state-pill > span:first-child {
+    font-size: 16px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .state-pill > strong {
+    font-size: 28px;
+  }
+}
+
+/* 2026-09-17 monitoring/admin UI refresh */
+.now-time {
+  font-size: 2em;
+  letter-spacing: .02em;
+}
+
+.queue-title {
+  font-size: 36px;
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+}
+.queue-list { gap: 16px; }
+.queue-chip {
+  min-width: 96px;
+  height: 72px;
+  font-size: 32px;
+}
+
+.state-pill .waiting-status {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 6px;
+  color: var(--text);
+}
+.state-pill .waiting-status strong {
+  display: inline;
+  margin: 0;
+  color: var(--text);
+  font-size: 22px;
+}
+.waiting-status-icon {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+@media (orientation: portrait) {
+  .viewer-topbar ~ .single-service-wrap .state-pill .waiting-status {
+    gap: 14px;
+  }
+  .viewer-topbar ~ .single-service-wrap .waiting-status-icon {
+    width: 46px;
+    height: 46px;
+  }
+  .viewer-topbar ~ .single-service-wrap .state-pill .waiting-status strong {
+    font-size: 28px;
+  }
+}
+
+.admin-service-choice-card,
+.compact-service-choice-card {
+  width: min(620px, 100%);
+  margin-left: auto;
+  margin-right: auto;
+}
+.admin-service-choice,
+.compact-service-choice {
+  width: min(460px, 100%);
+  margin: 22px auto 0;
+  gap: 12px;
+}
+.admin-service-choice .btn,
+.compact-service-choice .btn {
+  width: 100%;
+  min-height: 58px;
+  border-radius: 18px;
+  box-shadow: 0 8px 24px rgba(31, 45, 61, .08);
+  color: #252a32;
+  border: 1px solid rgba(60, 70, 90, .08);
+}
+.admin-choice-consultant { background: #e8f1ff; }
+.admin-choice-sales { background: #ffe9ee; }
+.admin-choice-integrated { background: #e8f7ee; }
+.state-mini.single-state { grid-template-columns: 1fr; }
+
+
+/* 2026-09-17 landscape single-view scale up */
+@media (orientation: landscape) {
+  .viewer-topbar ~ .single-service-wrap,
+  .admin-topbar ~ .single-service-wrap {
+    width: min(1274px, 100%);
+  }
+
+  .viewer-topbar ~ .single-service-wrap .service-card,
+  .admin-topbar ~ .single-service-wrap .service-card {
+    min-height: 806px;
+    padding: clamp(24px, 3.4vw, 42px);
+  }
+
+  .viewer-topbar ~ .single-service-wrap .service-head,
+  .admin-topbar ~ .single-service-wrap .service-head {
+    margin-bottom: 28px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .service-title-wrap,
+  .admin-topbar ~ .single-service-wrap .service-title-wrap {
+    gap: 20px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .service-icon,
+  .admin-topbar ~ .single-service-wrap .service-icon {
+    width: 70px;
+    height: 70px;
+    font-size: 32px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .service-small,
+  .admin-topbar ~ .single-service-wrap .service-small {
+    font-size: 18px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .service-title,
+  .admin-topbar ~ .single-service-wrap .service-title {
+    font-size: clamp(30px, 2.8vw, 42px);
+  }
+
+  .viewer-topbar ~ .single-service-wrap .now-time,
+  .admin-topbar ~ .single-service-wrap .now-time {
+    font-size: 2.35em;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .current-box,
+  .admin-topbar ~ .single-service-wrap .current-box {
+    min-height: 214px;
+    margin-bottom: 28px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .current-number,
+  .admin-topbar ~ .single-service-wrap .current-number {
+    font-size: clamp(64px, 9vw, 142px);
+  }
+
+  .viewer-topbar ~ .single-service-wrap .current-number.wait,
+  .admin-topbar ~ .single-service-wrap .current-number.wait {
+    font-size: clamp(52px, 6.6vw, 92px);
+  }
+
+  .viewer-topbar ~ .single-service-wrap .state-mini,
+  .admin-topbar ~ .single-service-wrap .state-mini {
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .state-pill,
+  .admin-topbar ~ .single-service-wrap .state-pill {
+    min-height: 124px;
+    padding: 18px 16px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .state-pill span,
+  .admin-topbar ~ .single-service-wrap .state-pill span {
+    font-size: 17px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .state-pill strong,
+  .admin-topbar ~ .single-service-wrap .state-pill strong {
+    font-size: 30px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .queue-title,
+  .admin-topbar ~ .single-service-wrap .queue-title {
+    font-size: 40px;
+    padding-bottom: 20px;
+    margin-bottom: 20px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .queue-list,
+  .admin-topbar ~ .single-service-wrap .queue-list {
+    gap: 18px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .queue-chip,
+  .admin-topbar ~ .single-service-wrap .queue-chip {
+    min-width: 108px;
+    height: 82px;
+    font-size: 36px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .queue-empty,
+  .admin-topbar ~ .single-service-wrap .queue-empty {
+    font-size: 22px;
+    padding: 18px 0;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .action-grid,
+  .admin-topbar ~ .single-service-wrap .action-grid {
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .btn,
+  .admin-topbar ~ .single-service-wrap .btn {
+    min-height: 84px;
+    font-size: 24px;
+    border-radius: 22px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .waiting-status-icon,
+  .admin-topbar ~ .single-service-wrap .waiting-status-icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .viewer-topbar ~ .single-service-wrap .state-pill .waiting-status strong,
+  .admin-topbar ~ .single-service-wrap .state-pill .waiting-status strong {
+    font-size: 28px;
   }
 }

@@ -89,13 +89,27 @@ function isIntegratedView(serviceType) {
   return serviceType === INTEGRATED_SERVICE;
 }
 
+function viewerHeaderTitle(serviceType, admin = false) {
+  if (isIntegratedView(serviceType)) return "";
+  if (serviceType === "simple_service") return "갤럭시 컨설턴트";
+  if (serviceType === "purchase_consult") return admin ? "판매 매니저" : "판매 매니저";
+  return "";
+}
+
+function renderWaitingStatus(waitingCount) {
+  const crowded = waitingCount >= 5;
+  const icon = crowded ? "/static/image/status/crowded.png" : "/static/image/status/good.png";
+  const label = crowded ? "혼잡" : "양호";
+  return `<span class="waiting-status"><img src="${icon}" alt="" class="waiting-status-icon"><strong>${label}</strong></span>`;
+}
+
 function nowLabel() {
   const now = new Date();
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   const hour = String(now.getHours()).padStart(2, "0");
   const minute = String(now.getMinutes()).padStart(2, "0");
-  return `${month}월${day}일${hour}시${minute}분`;
+  return `${month}/${day}일  ${hour}:${minute}`;
 }
 
 function clearPolling() {
@@ -236,20 +250,23 @@ function renderStoreList(stores, actionName) {
 function renderServiceChoice(mode, selectedStore) {
   const title = mode === "admin" ? "관리할 업무를 선택하세요." : "업무를 선택하세요.";
   const action = mode === "admin" ? "selectAdminService" : mode === "display" ? "selectDisplayService" : "selectCustomerService";
+  const compactChoice = mode === "admin" || mode === "customer";
   const serviceButtons = SERVICE_ORDER.map((serviceType) => {
     const meta = serviceMeta(serviceType);
     const label = mode === "admin" ? meta.admin_label : meta.customer_label;
-    const buttonClass = meta.theme === "red" ? "btn-red" : "btn-primary";
+    const buttonClass = compactChoice
+      ? (meta.theme === "red" ? "admin-choice-sales" : "admin-choice-consultant")
+      : (meta.theme === "red" ? "btn-red" : "btn-primary");
     return `<button class="btn ${buttonClass}" data-action="${action}" data-service="${serviceType}">${escapeHtml(label)}</button>`;
   });
 
-  serviceButtons.push(`<button class="btn btn-green" data-action="${action}" data-service="${INTEGRATED_SERVICE}">통합보기</button>`);
+  serviceButtons.push(`<button class="btn ${compactChoice ? "admin-choice-integrated" : "btn-green"}" data-action="${action}" data-service="${INTEGRATED_SERVICE}">통합보기</button>`);
 
   return `
-    <section class="layout-card">
+    <section class="layout-card ${compactChoice ? "admin-service-choice-card compact-service-choice-card" : ""}">
       <h2 class="section-title">${escapeHtml(selectedStore.name)}</h2>
       <p class="sub-title">${title}</p>
-      <div class="service-select">
+      <div class="service-select ${compactChoice ? "admin-service-choice compact-service-choice" : ""}">
         ${serviceButtons.join("")}
       </div>
     </section>
@@ -354,12 +371,8 @@ function renderCustomer() {
   }
 
   const selectedService = appState.selectedCustomerService;
-  const title = isIntegratedView(selectedService)
-    ? `${selected.name} · 통합보기`
-    : `${selected.name} · ${serviceMeta(selectedService).customer_label}`;
-  const subtitle = isIntegratedView(selectedService)
-    ? "고객님. 잠시만 기다려 주세요."
-    : "고객님. 잠시만 기다려 주세요.";
+  const title = viewerHeaderTitle(selectedService);
+  const subtitle = "";
 
   $app.innerHTML = `
     ${headerHtml(
@@ -382,6 +395,8 @@ function renderCustomerDisplayServiceCard(serviceType, scope = "customer") {
   const visibleNumber = getVisibleCallNumber(scope, serviceType);
   const waitingCount = serviceState?.waiting_count ?? 0;
   const queue = serviceState?.waiting_tickets || [];
+  const selectedView = scope === "display" ? appState.selectedDisplayService : appState.selectedCustomerService;
+  const showWaitingStatus = true;
   return `
     <article class="service-card ${theme}">
       <div class="service-head">
@@ -397,9 +412,9 @@ function renderCustomerDisplayServiceCard(serviceType, scope = "customer") {
       <div class="current-box">
         ${visibleNumber ? `<div class="current-number ${theme}">${visibleNumber}</div>` : `<div class="current-number wait">대기중</div>`}
       </div>
-      <div class="state-mini">
+      <div class="state-mini ${showWaitingStatus ? "" : "single-state"}">
         <div class="state-pill"><span>대기 인원</span><strong>${waitingCount}명</strong></div>
-        <div class="state-pill"><span>호출 상태</span><strong>${visibleNumber ? `${visibleNumber}번` : "대기중"}</strong></div>
+        ${showWaitingStatus ? `<div class="state-pill"><span>대기 상태</span>${renderWaitingStatus(waitingCount)}</div>` : ""}
       </div>
       <div class="queue-title">대기 목록</div>
       ${queue.length ? `<div class="queue-list">${queue.map((ticket) => `<span class="queue-chip">${ticket.ticket_number}</span>`).join("")}</div>` : `<div class="queue-empty">대기 중인 고객이 없습니다</div>`}
@@ -444,12 +459,8 @@ function renderAdmin() {
   }
 
   const isIntegratedAdmin = isIntegratedView(appState.selectedAdminService);
-  const selectedAdminTitle = isIntegratedAdmin
-    ? `${appState.selectedAdminStore.name} · 통합보기`
-    : `${appState.selectedAdminStore.name} · ${serviceMeta(appState.selectedAdminService).admin_label}`;
-  const selectedAdminSubtitle = isIntegratedAdmin
-    ? "안녕하세요 관리자님, 오늘도 행복한 하루 되세요."
-    : "안녕하세요 관리자님, 오늘도 행복한 하루 되세요.";
+  const selectedAdminTitle = viewerHeaderTitle(appState.selectedAdminService, true);
+  const selectedAdminSubtitle = "";
   const customerUrl = `/customer?store_id=${appState.selectedAdminStore.id}&service_type=${appState.selectedAdminService}`;
   $app.innerHTML = `
     ${headerHtml(
@@ -895,12 +906,8 @@ function renderDisplay() {
   }
 
   const selectedService = appState.selectedDisplayService;
-  const title = isIntegratedView(selectedService)
-    ? `${selected.name} · 통합보기`
-    : `${selected.name} · ${serviceMeta(selectedService).customer_label}`;
-  const subtitle = isIntegratedView(selectedService)
-    ? "번호가 호출되면 화면에 팝업이 표시됩니다."
-    : "번호가 호출되면 화면에 팝업이 표시됩니다.";
+  const title = viewerHeaderTitle(selectedService);
+  const subtitle = "";
 
   $app.innerHTML = `
     ${headerHtml(
