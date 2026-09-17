@@ -358,8 +358,8 @@ function renderCustomer() {
     ? `${selected.name} · 통합보기`
     : `${selected.name} · ${serviceMeta(selectedService).customer_label}`;
   const subtitle = isIntegratedView(selectedService)
-    ? "간단서비스와 구매문의를 함께 표시합니다."
-    : "관리자가 호출하면 이 화면 중앙에 크게 표시됩니다.";
+    ? "고객님. 잠시만 기다려 주세요."
+    : "고객님. 잠시만 기다려 주세요.";
 
   $app.innerHTML = `
     ${headerHtml(
@@ -432,7 +432,7 @@ function renderAdmin() {
     $app.innerHTML = `
       ${headerHtml(
         appState.selectedAdminStore.name,
-        "갤럭시 컨설턴트와 구매상담을 따로 선택합니다.",
+        "원하시는 서비스를 선택해 주세요.",
         renderAdminGear(),
         "admin-topbar"
       )}
