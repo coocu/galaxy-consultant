@@ -53,7 +53,7 @@ from .services import (
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 ADMIN_SESSION_COOKIE = "codenote_staff_call_admin_session"
-ADMIN_SESSION_SECONDS = 30 * 60
+ADMIN_SESSION_SECONDS = 24 * 60 * 60
 MANAGE_SESSION_COOKIE = "codenote_staff_call_manage_session"
 MANAGE_SESSION_SECONDS = 10 * 60
 

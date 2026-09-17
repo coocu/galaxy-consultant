@@ -531,7 +531,7 @@ function renderAdminServiceCard(serviceType) {
   const theme = meta.theme;
   const current = serviceState?.current_number;
   const waitingCount = serviceState?.waiting_count ?? 0;
-  const nextNumber = serviceState?.next_number ?? 1;
+  const nextNumber = serviceState?.next_number ?? (serviceType === "purchase_consult" ? 101 : 1);
   return `
     <article class="service-card ${theme}">
       <div class="service-head">
@@ -1368,7 +1368,12 @@ function playCallAnnouncement(call) {
   speakSilentCallTrigger(text);
 
   const ticketNumber = Number(call.ticket_number);
-  if (!Number.isInteger(ticketNumber) || ticketNumber < 1 || ticketNumber > 99) return;
+  if (!Number.isInteger(ticketNumber)) return;
+
+  const hasNumberAudio =
+    (call.service_type === "simple_service" && ticketNumber >= 1 && ticketNumber <= 99) ||
+    (call.service_type === "purchase_consult" && ticketNumber >= 101 && ticketNumber <= 199);
+  if (!hasNumberAudio) return;
 
   const folder = CALL_AUDIO_FOLDERS[call.service_type];
   if (!folder || !callAudio) return;

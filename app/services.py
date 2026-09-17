@@ -78,15 +78,20 @@ def get_or_create_counter(db: Session, store_id: int, service_type: str, lock: b
     if lock:
         query = query.with_for_update()
     counter = db.execute(query).scalar_one_or_none()
+    start_number = 101 if service_type == SERVICE_PURCHASE else 1
     if counter is None:
         counter = ServiceCounter(
             store_id=store_id,
             service_type=service_type,
-            next_number=1,
+            next_number=start_number,
             current_number=None,
             round_no=1,
         )
         db.add(counter)
+        db.flush()
+    elif counter.next_number < start_number:
+        # 기존 배포 DB의 구매상담 카운터도 새 번호대(101~)로 즉시 전환한다.
+        counter.next_number = start_number
         db.flush()
     return counter
 
@@ -260,7 +265,7 @@ def reset_service(db: Session, store_id: int, service_type: str) -> ServiceCount
             Ticket.status.in_(["waiting", "called"]),
         ).update({Ticket.status: "reset"}, synchronize_session=False)
 
-        counter.next_number = 1
+        counter.next_number = 101 if service_type == SERVICE_PURCHASE else 1
         counter.current_number = None
         counter.round_no = old_round_no + 1
         call = CallLog(
