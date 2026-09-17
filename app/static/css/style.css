@@ -571,6 +571,8 @@ a { color: inherit; text-decoration: none; }
 
   .topbar.viewer-topbar .admin-header-actions {
     flex: 0 0 auto;
+    width: auto;
+    justify-content: flex-end;
   }
 
   .viewer-topbar ~ .single-service-wrap {
