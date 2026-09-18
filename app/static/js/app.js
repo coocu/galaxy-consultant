@@ -1528,6 +1528,26 @@ async function safeRun(task) {
   }
 }
 
+const ENTER_ACTION_BY_INPUT_ID = {
+  storeCode: "storeCodeLogin",
+  adminKey: "adminLogin",
+  manageKey: "unlockManage",
+  manageSearch: "searchManage",
+  displaySearch: "displaySearch",
+  customerSearch: "customerSearch",
+  adminStoreSearch: "adminStoreSearch",
+};
+
+$app.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.isComposing) return;
+  const input = event.target.closest("input");
+  if (!input) return;
+  const action = ENTER_ACTION_BY_INPUT_ID[input.id];
+  if (!action) return;
+  event.preventDefault();
+  $app.querySelector(`[data-action="${action}"]`)?.click();
+});
+
 $app.addEventListener("click", (event) => {
   const target = event.target.closest("[data-link], [data-action]");
   if (!target) return;
