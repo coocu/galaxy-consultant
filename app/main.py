@@ -8,8 +8,9 @@ import secrets
 import threading
 import time
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, time as datetime_time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
@@ -24,7 +25,7 @@ from sqlalchemy.orm import Session
 from .backup import make_backup_zip, restore_from_zip_bytes
 from .config import Settings, load_settings
 from .database import Base, build_engine, build_session_factory, get_db
-from .models import Store
+from .models import CallLog, Store
 from .push import (
     disable_push_subscription,
     push_config_payload,
@@ -32,6 +33,7 @@ from .push import (
     send_ticket_push_notifications,
 )
 from .services import (
+    CALL_DAILY_RESET,
     CALL_DIRECT,
     CALL_NORMAL,
     CALL_RECALL,
@@ -53,53 +55,9 @@ from .services import (
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 ADMIN_SESSION_COOKIE = "codenote_staff_call_admin_session"
-ADMIN_SESSION_SECONDS = 30 * 60
+ADMIN_SESSION_SECONDS = 24 * 60 * 60
 MANAGE_SESSION_COOKIE = "codenote_staff_call_manage_session"
 MANAGE_SESSION_SECONDS = 10 * 60
-SEOUL_TZ = timezone(timedelta(hours=9), name="Asia/Seoul")
-
-
-def _seconds_until_next_seoul_midnight(now: datetime | None = None) -> float:
-    """다음 한국시간 자정까지 남은 초를 반환한다."""
-    current = now or datetime.now(UTC)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=UTC)
-    seoul_now = current.astimezone(SEOUL_TZ)
-    next_midnight = (seoul_now + timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    return (next_midnight - seoul_now).total_seconds()
-
-
-def _reset_all_store_queues(app: FastAPI) -> int:
-    """모든 매장의 두 업무를 초기화하고 실시간 화면에 변경 상태를 알린다."""
-    db = app.state.SessionLocal()
-    reset_count = 0
-    try:
-        store_ids = list(db.execute(select(Store.id)).scalars())
-        for store_id in store_ids:
-            reset_service(db, store_id, SERVICE_SIMPLE)
-            reset_count += 1
-            reset_service(db, store_id, SERVICE_PURCHASE)
-            reset_count += 1
-            state_payload = get_store_state(db, store_id)
-            for service_type in (SERVICE_SIMPLE, SERVICE_PURCHASE):
-                _publish_store_event(app, store_id, {
-                    "type": "service_reset",
-                    "service_type": service_type,
-                    "state": state_payload,
-                })
-    finally:
-        db.close()
-    return reset_count
-
-
-async def _daily_midnight_reset_loop(app: FastAPI) -> None:
-    """서버가 실행 중인 동안 매일 한국시간 00:00에 전체 대기열을 초기화한다."""
-    while True:
-        await asyncio.sleep(_seconds_until_next_seoul_midnight())
-        await asyncio.to_thread(_reset_all_store_queues, app)
-
 
 
 class StoreEventBroker:
@@ -154,6 +112,69 @@ def _publish_store_event(app: FastAPI, store_id: int, payload: dict[str, object]
     broker = getattr(app.state, "store_event_broker", None)
     if isinstance(broker, StoreEventBroker):
         broker.publish(store_id, payload)
+
+
+KST = ZoneInfo("Asia/Seoul")
+
+
+def run_daily_reset_if_needed(app: FastAPI, now_kst: datetime | None = None) -> int:
+    """한국시간 기준 오늘 자동 초기화가 아직 안 된 매장/업무만 초기화한다."""
+    current_kst = now_kst or datetime.now(KST)
+    if current_kst.tzinfo is None:
+        current_kst = current_kst.replace(tzinfo=KST)
+    else:
+        current_kst = current_kst.astimezone(KST)
+
+    kst_midnight = datetime.combine(current_kst.date(), datetime_time.min, tzinfo=KST)
+    utc_midnight_naive = kst_midnight.astimezone(UTC).replace(tzinfo=None)
+
+    db: Session = app.state.SessionLocal()
+    reset_count = 0
+    try:
+        store_ids = list(db.execute(select(Store.id)).scalars())
+        for store_id in store_ids:
+            reset_services: list[str] = []
+            for service_type in (SERVICE_SIMPLE, SERVICE_PURCHASE):
+                already_reset = db.execute(
+                    select(CallLog.id)
+                    .where(
+                        CallLog.store_id == store_id,
+                        CallLog.service_type == service_type,
+                        CallLog.call_type == CALL_DAILY_RESET,
+                        CallLog.created_at >= utc_midnight_naive,
+                    )
+                    .limit(1)
+                ).scalar_one_or_none()
+                if already_reset is not None:
+                    continue
+                reset_service(db, store_id, service_type, call_type=CALL_DAILY_RESET)
+                reset_count += 1
+                reset_services.append(service_type)
+
+            if reset_services:
+                state_payload = get_store_state(db, store_id)
+                for service_type in reset_services:
+                    _publish_store_event(app, store_id, {
+                        "type": "service_reset",
+                        "service_type": service_type,
+                        "state": state_payload,
+                    })
+    finally:
+        db.close()
+    return reset_count
+
+
+async def _daily_reset_loop(app: FastAPI) -> None:
+    while True:
+        await asyncio.to_thread(run_daily_reset_if_needed, app)
+        now_kst = datetime.now(KST)
+        next_midnight = datetime.combine(
+            now_kst.date() + timedelta(days=1),
+            datetime_time.min,
+            tzinfo=KST,
+        )
+        seconds_until_midnight = max(1.0, (next_midnight - now_kst).total_seconds() + 1.0)
+        await asyncio.sleep(seconds_until_midnight)
 
 
 class LoginBody(BaseModel):
@@ -401,7 +422,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
 
         daily_reset_task = None
         if not settings.testing:
-            daily_reset_task = asyncio.create_task(_daily_midnight_reset_loop(_app))
+            daily_reset_task = asyncio.create_task(_daily_reset_loop(_app))
         try:
             yield
         finally:

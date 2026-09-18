@@ -34,6 +34,7 @@ CALL_NORMAL = "normal"
 CALL_RECALL = "recall"
 CALL_DIRECT = "direct"
 CALL_RESET = "reset"
+CALL_DAILY_RESET = "daily_reset"
 
 
 
@@ -253,7 +254,12 @@ def direct_call(db: Session, store_id: int, service_type: str, ticket_number: in
         return call
 
 
-def reset_service(db: Session, store_id: int, service_type: str) -> ServiceCounter:
+def reset_service(
+    db: Session,
+    store_id: int,
+    service_type: str,
+    call_type: str = CALL_RESET,
+) -> ServiceCounter:
     validate_service_type(service_type)
     with _counter_lock_for(store_id, service_type):
         counter = get_or_create_counter(db, store_id, service_type, lock=True)
@@ -273,7 +279,7 @@ def reset_service(db: Session, store_id: int, service_type: str) -> ServiceCount
             service_type=service_type,
             round_no=counter.round_no,
             ticket_number=None,
-            call_type=CALL_RESET,
+            call_type=call_type,
         )
         db.add(call)
         db.commit()

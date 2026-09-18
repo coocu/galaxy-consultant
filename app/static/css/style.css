@@ -312,7 +312,6 @@ a { color: inherit; text-decoration: none; }
 .service-small.blue { color: var(--blue); }
 .service-small.red { color: var(--red); }
 .service-title { font-size: clamp(22px, 2.4vw, 32px); font-weight: 1000; overflow-wrap: anywhere; }
-.now-time { color: var(--muted); font-weight: 900; white-space: nowrap; }
 
 .current-box {
   background: #fff;
@@ -634,10 +633,6 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* 2026-09-17 monitoring/admin UI refresh */
-.now-time {
-  font-size: 2em;
-  letter-spacing: .02em;
-}
 
 .queue-title {
   font-size: 36px;
@@ -751,11 +746,6 @@ a { color: inherit; text-decoration: none; }
   .viewer-topbar ~ .single-service-wrap .service-title,
   .admin-topbar ~ .single-service-wrap .service-title {
     font-size: clamp(30px, 2.8vw, 42px);
-  }
-
-  .viewer-topbar ~ .single-service-wrap .now-time,
-  .admin-topbar ~ .single-service-wrap .now-time {
-    font-size: 2.35em;
   }
 
   .viewer-topbar ~ .single-service-wrap .current-box,
