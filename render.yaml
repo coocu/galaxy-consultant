@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: codenote-staff-call
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:code_note95@naver.com
+      - key: FCM_ENABLED
+        value: "true"
+      - key: FCM_PROJECT_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: FCM_REGISTRATION_DAYS
+        value: "30"
+      - key: FCM_TTL_SECONDS
+        value: "120"
