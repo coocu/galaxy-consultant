@@ -10,7 +10,6 @@ from sqlalchemy import select
 from .console_models import ConsoleAccount, ConsoleGrant
 from .models import Store
 
-ROOT_USERNAME = '하상욱'
 ROOT_NAME = 'GC'
 COOKIE = 'codenote_console'
 GCS_COOKIE = 'codenote_gcs_access'
@@ -103,7 +102,7 @@ def principal(request: Request, db):
     if request.method not in {'GET','HEAD','OPTIONS'} and not hmac.compare_digest(request.headers.get('x-console-csrf',''),data['csrf']):
         raise HTTPException(403,'화면을 새로고침한 뒤 다시 시도하세요')
     if data['root']:
-        return {'role':'root','name':ROOT_NAME,'username':ROOT_USERNAME,'account_id':None,'csrf':data['csrf']}
+        return {'role':'root','name':ROOT_NAME,'username':ROOT_NAME,'account_id':None,'csrf':data['csrf']}
     account=db.get(ConsoleAccount,data['account_id'])
     if not account or not account.is_active or account.session_version!=data['version']:
         raise HTTPException(401,'관리자 권한이 변경되었습니다. 다시 로그인하세요')

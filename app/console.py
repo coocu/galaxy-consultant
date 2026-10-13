@@ -18,7 +18,7 @@ from .console_backup import make_full_backup, restore_full_backup, MAX_ZIP_BYTES
 
 class LoginBody(BaseModel):
     mode: str = Field(pattern='^(branch|integrated)$')
-    username: str = Field(min_length=1,max_length=80)
+    username: str = Field(default='',max_length=80)
     password: str = Field(min_length=1,max_length=512)
     name: str = Field(default='',max_length=80)
 
@@ -111,8 +111,6 @@ def register_console(app, config, templates, verify_key, require_manager):
         else:
             if 'GCGC' not in password:
                 raise HTTPException(401,'인증키를 입력해 주세요')
-            if body.username.strip()!=auth.ROOT_USERNAME:
-                raise HTTPException(401,'아이디를 확인하세요')
             if not root:
                 account=db.scalar(select(ConsoleAccount).where(ConsoleAccount.username==name,ConsoleAccount.role=='integrated'))
                 if not account or not account.is_active:
@@ -177,7 +175,7 @@ def register_console(app, config, templates, verify_key, require_manager):
         auth.require_gcs(request,db)
         accounts=list(db.scalars(select(ConsoleAccount).order_by(ConsoleAccount.display_name)))
         rows=db.execute(select(Store,StoreProfile).outerjoin(StoreProfile,Store.id==StoreProfile.store_id).order_by(Store.name)).all()
-        return {'root':{'name':auth.ROOT_NAME,'username':auth.ROOT_USERNAME,'fixed':True},
+        return {'root':{'name':auth.ROOT_NAME,'username':auth.ROOT_NAME,'fixed':True},
                 'accounts':[{'id':a.id,'name':a.display_name,'username':a.username,'role':a.role,'store_id':a.store_id,
                     'is_active':a.is_active,'store_ids':[g.store_id for g in a.grants]} for a in accounts],
                 'stores':[store_payload(s,p) for s,p in rows]}
