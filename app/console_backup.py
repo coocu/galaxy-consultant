@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+from contextlib import nullcontext
 from datetime import datetime, UTC
 from sqlalchemy import Boolean, DateTime, Integer, LargeBinary, String, Text, delete, insert, select, text
 from sqlalchemy.exc import IntegrityError, StatementError
@@ -54,7 +55,7 @@ def _make_full_backup(db, video_directory):
         if len(encoded) > MAX_JSON_BYTES or sum(len(rows) for rows in payload['tables'].values()) > MAX_ROWS:
             raise ValueError('백업 데이터가 허용 크기를 초과합니다. 운영 DB 백업으로 보관하세요')
         archive.writestr('data.json', encoded)
-        archive.writestr('README.txt', 'Galaxy Consultant 전체 운영 백업 v3\n매장·번호표·호출·트래픽·관리자·권한·영상·알림 등록 데이터가 포함됩니다.\n비밀번호 검증값과 기기 토큰이 있으므로 외부에 공유하지 마세요.\n로그인 세션, 환경변수와 외부 인증 서버의 키는 포함하지 않습니다.\n복원은 현재 데이터를 백업 시점으로 교체합니다. 영상 폴더도 포함됩니다. 6개월 이전 누적 기록은 복원 후 정리됩니다.\n')
+        archive.writestr('README.txt', 'Galaxy Consultant 전체 운영 백업 v3\n매장·번호표·호출·트래픽·관리자·권한·영상·알림 등록 데이터가 포함됩니다.\n비밀번호 검증값과 기기 토큰이 있으므로 외부에 공유하지 마세요.\n로그인 세션, 환경변수와 외부 인증 서버의 키는 포함하지 않습니다.\n복원은 현재 데이터를 백업 시점으로 교체합니다. 영상 파일이 포함된 ZIP만 영상 목록을 교체하며, 영상 없는 ZIP은 현재 영상을 유지합니다. 6개월 이전 누적 기록은 복원 후 정리됩니다.\n')
     db.rollback()  # 읽기 트랜잭션만 종료
     return output.getvalue()
 
@@ -141,7 +142,9 @@ def restore_full_backup(db, content, video_directory=VIDEO_DIR):
         if (row['role']=='branch') != (row['store_id'] is not None):
             raise ValueError('지점 관리자 연결 정보가 올바르지 않습니다')
     try:
-        with replace_video_folder(video_contents, video_directory):
+        # 영상 없는 데이터 ZIP은 기존 영상 폴더를 읽거나 교체하지 않는다.
+        # 빈 영상 목록은 삭제 요청이 아니다. 삭제는 GC 동영상 관리에서 수행한다.
+        with replace_video_folder(video_contents, video_directory) if video_contents else nullcontext():
             # 외래 키에 따라 역순 삭제/정순 삽입. 오류 시 전체 롤백한다.
             for table in reversed(tables):
                 db.execute(delete(table))
