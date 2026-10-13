@@ -1358,8 +1358,8 @@ function playCallAnnouncement(call) {
   if (!Number.isInteger(ticketNumber)) return;
 
   const hasNumberAudio =
-    (call.service_type === "simple_service" && ticketNumber >= 1 && ticketNumber <= 99) ||
-    (call.service_type === "purchase_consult" && ticketNumber >= 101 && ticketNumber <= 199);
+    (call.service_type === "simple_service" && ticketNumber >= 1 && ticketNumber <= 300) ||
+    (call.service_type === "purchase_consult" && ticketNumber >= 301 && ticketNumber <= 600);
   if (!hasNumberAudio) return;
 
   const folder = CALL_AUDIO_FOLDERS[call.service_type];

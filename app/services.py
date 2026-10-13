@@ -15,6 +15,7 @@ from .console_models import TicketAttribution
 SERVICE_SIMPLE = "simple_service"
 SERVICE_PURCHASE = "purchase_consult"
 VALID_SERVICES = {SERVICE_SIMPLE, SERVICE_PURCHASE}
+TICKET_NUMBER_RANGES = {SERVICE_SIMPLE: (1, 300), SERVICE_PURCHASE: (301, 600)}
 
 SERVICE_META: dict[str, dict[str, str]] = {
     SERVICE_SIMPLE: {
@@ -80,7 +81,7 @@ def get_or_create_counter(db: Session, store_id: int, service_type: str, lock: b
     if lock:
         query = query.with_for_update()
     counter = db.execute(query).scalar_one_or_none()
-    start_number = 101 if service_type == SERVICE_PURCHASE else 1
+    start_number, _ = TICKET_NUMBER_RANGES[service_type]
     if counter is None:
         counter = ServiceCounter(
             store_id=store_id,
@@ -92,7 +93,7 @@ def get_or_create_counter(db: Session, store_id: int, service_type: str, lock: b
         db.add(counter)
         db.flush()
     elif counter.next_number < start_number:
-        # 기존 배포 DB의 구매상담 카운터도 새 번호대(101~)로 즉시 전환한다.
+        # 기존 배포 DB의 구매상담 카운터도 새 번호대(301~)로 즉시 전환한다.
         counter.next_number = start_number
         db.flush()
     return counter
@@ -153,14 +154,30 @@ def issue_ticket(db: Session, store_id: int, service_type: str, source: str = "d
             raise ValueError("현재 사용할 수 없는 매장입니다")
 
         counter = get_or_create_counter(db, store_id, service_type, lock=True)
+        start_number, end_number = TICKET_NUMBER_RANGES[service_type]
+        wraps = counter.next_number > end_number
+        ticket_number = start_number if wraps else counter.next_number
+        # 번호만 반복한다. 이전 회차의 대기 고객과 호출 기록은 그대로 유지한다.
+        duplicate = db.execute(
+            select(Ticket.id).where(
+                Ticket.store_id == store_id,
+                Ticket.service_type == service_type,
+                Ticket.ticket_number == ticket_number,
+                Ticket.status == "waiting",
+            ).limit(1)
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            raise ValueError(f"{ticket_number}번이 아직 대기 중입니다. 해당 번호 호출 후 다시 발급해 주세요")
+        if wraps:
+            counter.round_no += 1
         ticket = Ticket(
             store_id=store_id,
             service_type=service_type,
             round_no=counter.round_no,
-            ticket_number=counter.next_number,
+            ticket_number=ticket_number,
             status="waiting",
         )
-        counter.next_number += 1
+        counter.next_number = ticket_number + 1
         db.add(ticket)
         db.add(TicketAttribution(ticket=ticket, source=(source.strip()[:120] or "direct")))
         db.commit()
@@ -177,10 +194,10 @@ def call_next(db: Session, store_id: int, service_type: str) -> CallLog:
             .where(
                 Ticket.store_id == store_id,
                 Ticket.service_type == service_type,
-                Ticket.round_no == counter.round_no,
+                Ticket.round_no <= counter.round_no,
                 Ticket.status == "waiting",
             )
-            .order_by(Ticket.ticket_number.asc())
+            .order_by(Ticket.round_no.asc(), Ticket.ticket_number.asc())
             .limit(1)
         ).scalar_one_or_none()
         if ticket is None:
@@ -192,7 +209,7 @@ def call_next(db: Session, store_id: int, service_type: str) -> CallLog:
         call = CallLog(
             store_id=store_id,
             service_type=service_type,
-            round_no=counter.round_no,
+            round_no=ticket.round_no,
             ticket_number=ticket.ticket_number,
             call_type=CALL_NORMAL,
         )
@@ -209,10 +226,17 @@ def recall_last(db: Session, store_id: int, service_type: str) -> CallLog:
         if counter.current_number is None:
             raise ValueError("재호출할 번호가 없습니다")
 
+        last_round = db.execute(
+            select(CallLog.round_no).where(
+                CallLog.store_id == store_id,
+                CallLog.service_type == service_type,
+                CallLog.ticket_number == counter.current_number,
+            ).order_by(CallLog.id.desc()).limit(1)
+        ).scalar_one_or_none()
         call = CallLog(
             store_id=store_id,
             service_type=service_type,
-            round_no=counter.round_no,
+            round_no=last_round if last_round is not None else counter.round_no,
             ticket_number=counter.current_number,
             call_type=CALL_RECALL,
         )
@@ -233,10 +257,10 @@ def direct_call(db: Session, store_id: int, service_type: str, ticket_number: in
             select(Ticket).where(
                 Ticket.store_id == store_id,
                 Ticket.service_type == service_type,
-                Ticket.round_no == counter.round_no,
+                Ticket.round_no <= counter.round_no,
                 Ticket.ticket_number == ticket_number,
                 Ticket.status == "waiting",
-            )
+            ).order_by(Ticket.round_no.asc()).limit(1)
         ).scalar_one_or_none()
         if ticket is not None:
             ticket.status = "called"
@@ -246,7 +270,7 @@ def direct_call(db: Session, store_id: int, service_type: str, ticket_number: in
         call = CallLog(
             store_id=store_id,
             service_type=service_type,
-            round_no=counter.round_no,
+            round_no=ticket.round_no if ticket is not None else counter.round_no,
             ticket_number=ticket_number,
             call_type=CALL_DIRECT,
         )
@@ -269,11 +293,11 @@ def reset_service(
         db.query(Ticket).filter(
             Ticket.store_id == store_id,
             Ticket.service_type == service_type,
-            Ticket.round_no == old_round_no,
+            Ticket.round_no <= old_round_no,
             Ticket.status.in_(["waiting", "called"]),
         ).update({Ticket.status: "reset"}, synchronize_session=False)
 
-        counter.next_number = 101 if service_type == SERVICE_PURCHASE else 1
+        counter.next_number = TICKET_NUMBER_RANGES[service_type][0]
         counter.current_number = None
         counter.round_no = old_round_no + 1
         call = CallLog(
@@ -296,10 +320,10 @@ def get_waiting_tickets(db: Session, store_id: int, service_type: str, round_no:
             .where(
                 Ticket.store_id == store_id,
                 Ticket.service_type == service_type,
-                Ticket.round_no == round_no,
+                Ticket.round_no <= round_no,
                 Ticket.status == "waiting",
             )
-            .order_by(Ticket.ticket_number.asc())
+            .order_by(Ticket.round_no.asc(), Ticket.ticket_number.asc())
             .limit(limit)
         ).scalars()
     )
@@ -313,22 +337,24 @@ def get_store_state(db: Session, store_id: int) -> dict[str, Any]:
         waiting_filter = (
             Ticket.store_id == store_id,
             Ticket.service_type == service_type,
-            Ticket.round_no == counter.round_no,
+            Ticket.round_no <= counter.round_no,
             Ticket.status == "waiting",
         )
         waiting_count = db.execute(
             select(func.count(Ticket.id)).where(*waiting_filter)
         ).scalar_one()
         next_waiting_number = db.execute(
-            select(func.min(Ticket.ticket_number)).where(*waiting_filter)
-        ).scalar_one()
+            select(Ticket.ticket_number).where(*waiting_filter)
+            .order_by(Ticket.round_no.asc(), Ticket.ticket_number.asc()).limit(1)
+        ).scalar_one_or_none()
         waiting_tickets = get_waiting_tickets(db, store_id, service_type, counter.round_no)
+        start_number, end_number = TICKET_NUMBER_RANGES[service_type]
         services[service_type] = {
             "service_type": service_type,
             "meta": SERVICE_META[service_type],
             "current_number": counter.current_number,
             "waiting_count": int(waiting_count),
-            "next_number": counter.next_number,
+            "next_number": start_number if counter.next_number > end_number else counter.next_number,
             "next_waiting_number": next_waiting_number,
             "round_no": counter.round_no,
             "waiting_tickets": [ticket_to_dict(ticket) for ticket in waiting_tickets],
