@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -49,6 +49,8 @@ class Ticket(Base):
     __tablename__ = "tickets"
     __table_args__ = (
         UniqueConstraint("store_id", "service_type", "round_no", "ticket_number", name="uq_ticket_number_per_round"),
+        Index("ix_tickets_store_created", "store_id", "created_at"),
+        Index("ix_tickets_created_at", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

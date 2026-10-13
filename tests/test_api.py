@@ -10,13 +10,14 @@ from app.services import SERVICE_SIMPLE
 
 
 @pytest.fixture()
-def client():
+def client(tmp_path):
     app = create_app({
         "TESTING": True,
+        "VIDEO_DIRECTORY": str(tmp_path / "videos"),
         "DATABASE_URL": "sqlite:///:memory:",
         "SEED_DEFAULT_STORES": False,
         "AUTH_CHECKER": lambda code: {"status": "approved", "token": "test-token"}
-        if code in {"test-key", "kiosk-test-key"}
+        if code in {"test-key", "kiosk-test-key", "GCGC-test-key", "gcs-test-key"}
         else {"status": "denied"},
     })
     with TestClient(app) as test_client:
@@ -27,8 +28,12 @@ def client():
         db.close()
         login_response = test_client.post("/api/admin/login", json={"key": "test-key"})
         assert login_response.status_code == 200
-        manage_response = test_client.post("/api/admin/manage/login", json={"key": "kiosk-test-key"})
+        assert test_client.post('/api/console/login', json={'mode':'integrated','name':'GC','username':'하상욱','password':'GCGC-test-key'}).status_code == 200
+        test_client.headers['X-Console-CSRF'] = test_client.get('/api/console/me').json()['user']['csrf']
+        manage_response = test_client.post('/api/admin/manage/login', json={'key':'kiosk-test-key'})
         assert manage_response.status_code == 200
+        assert test_client.post('/api/console/access/unlock', json={'key':'gcs-test-key'}).status_code == 200
+        test_client.headers['X-Restore-Confirm'] = 'REPLACE'
         yield test_client
 
 
@@ -41,7 +46,7 @@ def test_store_management_requires_kiosk_key():
 
     def auth_checker(code: str):
         calls.append(code)
-        if code in {"plain-admin-key", "kiosk-admin-key"}:
+        if code in {"plain-admin-key", "kiosk-admin-key", "GCGC-test-key"}:
             return {"status": "approved", "token": "server-token"}
         return {"status": "denied"}
 
@@ -56,9 +61,11 @@ def test_store_management_requires_kiosk_key():
         login_response = test_client.post("/api/admin/login", json={"key": "plain-admin-key"})
         assert login_response.status_code == 200
 
+        assert test_client.post('/api/console/login', json={'mode':'integrated','name':'GC','username':'하상욱','password':'GCGC-test-key'}).status_code == 200
+        test_client.headers['X-Console-CSRF'] = test_client.get('/api/console/me').json()['user']['csrf']
         denied_manage = test_client.post("/api/admin/manage/login", json={"key": "plain-admin-key"})
         assert denied_manage.status_code == 401
-        assert denied_manage.json()["detail"] == "매장 관리는 kiosk가 포함된 인증키만 사용할 수 있습니다"
+        assert denied_manage.json()["detail"] == "인증키를 입력해 주세요"
 
         blocked_create = test_client.post("/api/admin/stores", json={"name": "차단점", "code": "NO001"})
         assert blocked_create.status_code == 401
@@ -160,7 +167,7 @@ def test_backup_zip_and_restore_roundtrip(client):
     assert restored_store["code"] == "BACK01"
 
 
-def test_backup_contains_only_store_categories(client):
+def test_backup_contains_full_operations(client):
     store_id = client.get('/api/stores').json()['stores'][0]['id']
     ticket_response = client.post('/api/tickets', json={'store_id': store_id, 'service_type': SERVICE_SIMPLE})
     assert ticket_response.status_code == 201
@@ -171,8 +178,9 @@ def test_backup_contains_only_store_categories(client):
     with zipfile.ZipFile(io.BytesIO(backup_response.content)) as archive:
         data = __import__('json').loads(archive.read('data.json').decode('utf-8'))
 
-    assert list(data.keys()) == ['version', 'exported_at', 'stores']
-    assert data['stores']
+    assert data['version'] == 3
+    assert data['tables']['stores']
+    assert len(data['tables']['tickets']) == 1
 
 
 def test_ticket_numbers_and_calls_are_isolated_by_store(client):

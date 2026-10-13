@@ -32,7 +32,7 @@ def test_customer_viewer_controls_are_hidden_behind_gear_modal():
     assert 'data-action="openViewerSettings"' in app_js
     assert 'data-action="enableVoice">${appState.voiceEnabled ? "음성 켜짐" : "음성 시작"}</button>' in app_js
     assert 'data-action="${changeServiceAction}">업무 변경</button>' in app_js
-    assert 'data-action="${changeStoreAction}">매장 변경</button>' in app_js
+    assert 'data-action="${changeStoreAction}">매장 변경</button>' not in app_js
 
 
 def test_integrated_view_uses_responsive_two_column_css():
@@ -62,7 +62,7 @@ def test_admin_controls_are_hidden_behind_gear_modal():
     assert 'data-action="openAdminSettings"' in app_js
     assert 'data-action="closeAdminSettings"' in app_js
     assert 'renderPushControl(false)' in app_js
-    assert 'data-action="openManage">매장관리</button>' in app_js
+    assert 'href="/console">운영 리포트</a>' in app_js
     assert 'data-action="logoutAdmin">로그아웃</button>' in app_js
 
 

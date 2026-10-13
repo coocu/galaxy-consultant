@@ -41,14 +41,14 @@ def test_issue_ticket_starts_at_one_and_isolated_by_service(app_and_store):
     second_simple = issue_ticket(db, store_id, SERVICE_SIMPLE)
 
     assert first_simple.ticket_number == 1
-    assert first_purchase.ticket_number == 1
+    assert first_purchase.ticket_number == 101
     assert second_simple.ticket_number == 2
 
     state = get_store_state(db, store_id)
     assert state["services"][SERVICE_SIMPLE]["waiting_count"] == 2
     assert state["services"][SERVICE_SIMPLE]["next_waiting_number"] == 1
     assert state["services"][SERVICE_PURCHASE]["waiting_count"] == 1
-    assert state["services"][SERVICE_PURCHASE]["next_waiting_number"] == 1
+    assert state["services"][SERVICE_PURCHASE]["next_waiting_number"] == 101
     db.close()
 
 

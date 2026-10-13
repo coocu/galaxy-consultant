@@ -1,4 +1,4 @@
-"""매장 카테고리 전용 ZIP 백업/복원 기능."""
+"""전체 ZIP 백업과 이전 매장 카테고리 ZIP 호환 복원."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ import zipfile
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import text, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .models import Store
@@ -55,93 +56,95 @@ def export_data(db: Session) -> dict[str, Any]:
     }
 
 
-def make_backup_zip(db: Session) -> bytes:
+def make_store_backup_zip(db: Session) -> bytes:
     payload = export_data(db)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("data.json", json.dumps(payload, ensure_ascii=False, indent=2))
         archive.writestr(
             "README.txt",
-            "CodeNote 직원 호출 시스템 매장 카테고리 백업 파일입니다. 번호표/호출기록은 포함되지 않습니다.\n",
+            "Galaxy Consultant 직원 호출 시스템 매장 카테고리 백업 파일입니다. 번호표/호출기록은 포함되지 않습니다.\n",
         )
     return buffer.getvalue()
 
 
-def restore_from_zip_bytes(db: Session, zip_bytes: bytes) -> dict[str, Any]:
-    try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
-            if "data.json" not in archive.namelist():
-                raise ValueError("백업 ZIP 안에 data.json 파일이 없습니다")
-            data = json.loads(archive.read("data.json").decode("utf-8"))
-    except zipfile.BadZipFile as exc:
-        raise ValueError("올바른 ZIP 백업 파일이 아닙니다") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError("data.json 형식이 올바르지 않습니다") from exc
+def make_backup_zip(db: Session, video_directory=None) -> bytes:
+    from .console_backup import make_full_backup
+    return make_full_backup(db, video_directory) if video_directory is not None else make_full_backup(db)
 
-    if data.get("version") not in SUPPORTED_BACKUP_VERSIONS:
+
+def backup_version(zip_bytes: bytes) -> int:
+    from .console_backup import _load_archive
+    archive, data = _load_archive(zip_bytes)
+    archive.close()
+    if not isinstance(data, dict): raise ValueError("백업 데이터 형식이 올바르지 않습니다")
+    return data.get("version", 0)
+
+
+def restore_from_zip_bytes(db: Session, zip_bytes: bytes, video_directory=None) -> dict[str, Any]:
+    from .console_backup import restore_full_backup
+    if backup_version(zip_bytes) == 3:
+        return {"kind": "full", "tables": restore_full_backup(db, zip_bytes, video_directory) if video_directory is not None else restore_full_backup(db, zip_bytes)}
+    return restore_store_zip(db, zip_bytes)
+
+
+def restore_store_zip(db: Session, zip_bytes: bytes) -> dict[str, Any]:
+    from .console_backup import _load_archive
+    archive, data = _load_archive(zip_bytes)
+    archive.close()
+    if not isinstance(data, dict) or data.get("version") not in SUPPORTED_BACKUP_VERSIONS:
         raise ValueError("지원하지 않는 백업 버전입니다")
     if not isinstance(data.get("stores"), list):
         raise ValueError("백업 데이터에 stores 목록이 없습니다")
-
-    restored_ids: set[int] = set()
-    restored_codes: set[str] = set()
+    prepared = []
+    ids, codes = set(), set()
     now = _now_naive_utc()
-
     for item in data["stores"]:
         try:
             store_id = int(item["id"])
             name = str(item["name"]).strip()
-            raw_code = item.get("code")
-            code = str(raw_code).strip().upper() if raw_code is not None else None
-            if code == "":
-                code = None
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("매장 카테고리 백업 데이터 형식이 올바르지 않습니다") from exc
+            code = str(item["code"]).strip().upper() if item.get("code") is not None else None
+            code = code or None
+            created = _parse_dt(item.get("created_at"))
+            updated = _parse_dt(item.get("updated_at"))
+            if created and created.tzinfo: created = created.astimezone(UTC).replace(tzinfo=None)
+            if updated and updated.tzinfo: updated = updated.astimezone(UTC).replace(tzinfo=None)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise ValueError("매장 백업의 ID, 이름, 점코드 또는 날짜가 올바르지 않습니다") from exc
+        if store_id < 1 or store_id in ids:
+            raise ValueError("매장 ID가 중복되거나 올바르지 않습니다")
+        if not name or len(name)>120 or (code and len(code)>40):
+            raise ValueError("매장 이름 또는 점코드의 길이가 올바르지 않습니다")
+        if code and code in codes: raise ValueError("중복된 점코드가 포함되어 있습니다")
+        if not isinstance(item.get("is_active",True),bool): raise ValueError("매장 활성 상태가 올바르지 않습니다")
+        ids.add(store_id)
+        if code: codes.add(code)
+        prepared.append((store_id,name,code,item.get("is_active",True),created,updated))
+    try:
+        existing = {store.id:store for store in db.scalars(select(Store))}
+        if any(store.id not in ids and store.code in codes for store in existing.values()):
+            raise ValueError("현재 다른 매장에서 사용하는 점코드가 있습니다. 중복을 확인한 뒤 복원하세요")
+        # 두 점코드가 서로 교환된 백업도 UNIQUE 제약을 위반하지 않게 처리한다.
+        for sid in ids:
+            if sid in existing: existing[sid].code=None
+        db.flush()
+        for sid,name,code,active,created,updated in prepared:
+            store=existing.get(sid)
+            if store is None:
+                store=Store(id=sid,name=name);db.add(store)
+            store.name=name;store.code=code;store.is_active=active
+            store.created_at=created or store.created_at or now
+            store.updated_at=updated or now
+        deactivated=0
+        for sid,store in existing.items():
+            if sid not in ids and store.is_active:
+                store.is_active=False;store.updated_at=now;deactivated+=1
+        db.flush()
+        if db.bind is not None and db.bind.dialect.name=='postgresql':
+            db.execute(text("SELECT setval(pg_get_serial_sequence('stores','id'), COALESCE((SELECT MAX(id) FROM stores), 1), (SELECT COUNT(*)>0 FROM stores))"))
+        db.commit()
+    except (IntegrityError, ValueError) as exc:
+        db.rollback()
+        raise ValueError(str(exc) if isinstance(exc,ValueError) else "점코드 또는 매장 ID가 충돌하여 복원하지 않았습니다") from exc
+    return {"stores":len(ids),"deactivated_missing_stores":deactivated}
 
-        if store_id < 1:
-            raise ValueError("매장 카테고리 ID는 1 이상이어야 합니다")
-        if not name:
-            raise ValueError("매장명이 비어 있는 백업 파일은 복원할 수 없습니다")
-        if code is not None and code in restored_codes:
-            raise ValueError("중복된 점코드가 포함된 백업 파일은 복원할 수 없습니다")
-        if code is not None:
-            restored_codes.add(code)
-
-        restored_ids.add(store_id)
-        store = db.get(Store, store_id)
-        if store is None:
-            store = Store(id=store_id, name=name, code=code)
-            db.add(store)
-        else:
-            store.name = name
-            store.code = code
-
-        store.is_active = bool(item.get("is_active", True))
-        store.created_at = _parse_dt(item.get("created_at")) or store.created_at or now
-        store.updated_at = _parse_dt(item.get("updated_at")) or now
-
-    # 백업에 없는 매장은 삭제하지 않고 비활성화한다.
-    # 이렇게 해야 해당 매장에 이미 쌓인 번호표/호출기록이 사라지지 않는다.
-    deactivated_count = 0
-    existing_stores = db.query(Store).all()
-    for store in existing_stores:
-        if store.id not in restored_ids and store.is_active:
-            store.is_active = False
-            store.updated_at = now
-            deactivated_count += 1
-
-    db.commit()
-    _reset_postgres_store_sequence(db)
-
-    return {
-        "stores": len(restored_ids),
-        "deactivated_missing_stores": deactivated_count,
-    }
-
-
-def _reset_postgres_store_sequence(db: Session) -> None:
-    """PostgreSQL에서 수동 ID 복원 후 stores 다음 자동 ID가 충돌하지 않도록 보정한다."""
-    if db.bind is None or db.bind.dialect.name != "postgresql":
-        return
-    db.execute(text("SELECT setval(pg_get_serial_sequence('stores','id'), COALESCE((SELECT MAX(id) FROM stores), 1), true)"))
-    db.commit()

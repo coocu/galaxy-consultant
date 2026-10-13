@@ -1,4 +1,4 @@
-"""CodeNote 직원 호출 시스템 FastAPI 엔트리포인트."""
+"""Galaxy Consultant 직원 호출 시스템 FastAPI 엔트리포인트."""
 
 from __future__ import annotations
 
@@ -22,10 +22,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import inspect, or_, select, text
 from sqlalchemy.orm import Session
 
-from .backup import make_backup_zip, restore_from_zip_bytes
+from .backup import make_backup_zip, restore_from_zip_bytes, backup_version
+from .console_auth import require_gcs, principal, throttle, login_succeeded
+from .retention import retention_loop
+from .video import register_video
+from .console import register_console
 from .config import Settings, load_settings
 from .database import Base, build_engine, build_session_factory, get_db
-from .models import CallLog, Store
+from .models import CallLog, Store, Ticket
 from .mobile_push import FirebaseSender, ensure_mobile_schema, install_mobile_push, mobile_push_loop, register_mobile_routes
 from .push import (
     disable_push_subscription,
@@ -196,6 +200,7 @@ class StoreUpdateBody(BaseModel):
 class TicketCreateBody(BaseModel):
     store_id: int = Field(gt=0)
     service_type: str
+    source: str = Field(default="direct", max_length=120)
 
 
 class CallBody(BaseModel):
@@ -271,7 +276,15 @@ def require_admin(request: Request) -> None:
         raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다")
 
 
+def require_console_owner(request: Request) -> None:
+    with request.app.state.SessionLocal() as db:
+        user = principal(request, db)
+        if user['role'] != 'root':
+            raise HTTPException(403, '매장관리는 전체 권한 관리자만 사용할 수 있습니다')
+
+
 def require_store_manager(request: Request) -> None:
+    require_console_owner(request)
     if not _has_manage_session(request):
         raise HTTPException(status_code=401, detail="매장 관리 인증이 필요합니다")
 
@@ -359,7 +372,7 @@ def _check_poket_auth(auth_check_url: str, code: str) -> dict[str, object]:
 def _verify_admin_key(app: FastAPI, code: str) -> None:
     auth_key = (code or "").strip()
     if not auth_key:
-        raise HTTPException(status_code=401, detail="인증키를 입력하세요")
+        raise HTTPException(status_code=401, detail="인증키를 입력해 주세요")
 
     auth_checker = getattr(app.state, "auth_checker", None)
     if callable(auth_checker):
@@ -374,7 +387,7 @@ def _verify_admin_key(app: FastAPI, code: str) -> None:
 def _verify_manage_key(app: FastAPI, code: str) -> None:
     auth_key = (code or "").strip()
     if "kiosk" not in auth_key.lower():
-        raise HTTPException(status_code=401, detail="매장 관리전용 인증키를 입력해 주세요")
+        raise HTTPException(status_code=401, detail="인증키를 입력해 주세요")
     _verify_admin_key(app, auth_key)
 
 
@@ -414,6 +427,9 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     async def lifespan(_app: FastAPI):
         _app.state.store_event_broker.set_loop(asyncio.get_running_loop())
         Base.metadata.create_all(bind=engine)
+        for index in Ticket.__table__.indexes:
+            if index.name in {"ix_tickets_store_created", "ix_tickets_created_at"}:
+                index.create(engine, checkfirst=True)
         ensure_store_code_schema(engine)
         ensure_mobile_schema(engine)
         db = session_local()
@@ -435,12 +451,17 @@ def create_app(test_config: dict | None = None) -> FastAPI:
                         "Manager FCM configuration needs attention: %s", sender.error)
             if not settings.testing:
                 mobile_task = asyncio.create_task(mobile_push_loop(_app))
+        retention_task = None if settings.testing else asyncio.create_task(retention_loop(_app))
         daily_reset_task = None
         if not settings.testing:
             daily_reset_task = asyncio.create_task(_daily_reset_loop(_app))
         try:
             yield
         finally:
+            if retention_task is not None:
+                retention_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await retention_task
             if mobile_task is not None:
                 mobile_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -452,7 +473,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
                 with suppress(asyncio.CancelledError):
                     await daily_reset_task
 
-    app = FastAPI(title="CodeNote 직원 호출 시스템", lifespan=lifespan)
+    app = FastAPI(title="Galaxy Consultant 직원 호출 시스템", lifespan=lifespan)
     app.state.settings = settings
     app.state.engine = engine
     app.state.SessionLocal = session_local
@@ -465,6 +486,8 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     app.state.store_event_broker = StoreEventBroker()
     install_mobile_push(app, test_config)
     register_mobile_routes(app, require_admin)
+    register_console(app, test_config, TEMPLATES, _verify_admin_key, require_store_manager)
+    register_video(app, TEMPLATES, test_config)
 
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
@@ -562,7 +585,10 @@ def create_app(test_config: dict | None = None) -> FastAPI:
 
     @app.post("/api/admin/manage/login")
     def manage_login(body: LoginBody, request: Request) -> JSONResponse:
+        require_console_owner(request)
+        identity = throttle(request, 'store-management')
         _verify_manage_key(request.app, body.key)
+        login_succeeded(request, identity)
         token = _issue_manage_session(request.app)
         response = JSONResponse({"ok": True, "message": "매장 관리 인증되었습니다"})
         _set_manage_cookie(response, request, token)
@@ -638,7 +664,7 @@ def create_app(test_config: dict | None = None) -> FastAPI:
     @app.post("/api/tickets", status_code=201)
     def create_ticket(body: TicketCreateBody, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
         try:
-            ticket = issue_ticket(db, body.store_id, body.service_type)
+            ticket = issue_ticket(db, body.store_id, body.service_type, source=body.source)
             ticket_payload = ticket_to_dict(ticket)
             state_payload = get_store_state(db, body.store_id)
         except ValueError as exc:
@@ -775,9 +801,13 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         return {"ok": True, "disabled": disabled}
 
     @app.get("/api/admin/backup", dependencies=[Depends(require_store_manager)])
-    def backup(db: Session = Depends(get_db)) -> Response:
-        content = make_backup_zip(db)
-        filename = f"codenote_staff_call_backup_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.zip"
+    def backup(request: Request, db: Session = Depends(get_db)) -> Response:
+        require_gcs(request, db)
+        try:
+            content = make_backup_zip(db, request.app.state.video_directory)
+        except ValueError as exc:
+            raise api_error(exc) from exc
+        filename = f"galaxy_consultant_backup_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.zip"
         return Response(
             content=content,
             media_type="application/zip",
@@ -785,14 +815,30 @@ def create_app(test_config: dict | None = None) -> FastAPI:
         )
 
     @app.post("/api/admin/restore", dependencies=[Depends(require_store_manager)])
-    async def restore(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict[str, object]:
-        if not file.filename.lower().endswith(".zip"):
+    async def restore(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict[str, object]:
+        if not (file.filename or "").lower().endswith(".zip"):
             raise HTTPException(status_code=400, detail="ZIP 백업 파일만 업로드할 수 있습니다")
+        content = await file.read(200 * 1024 * 1024 + 1)
         try:
-            result = restore_from_zip_bytes(db, await file.read())
+            version = backup_version(content)
+            if version == 3:
+                require_gcs(request, db)
+                if request.headers.get("x-restore-confirm") != "REPLACE":
+                    raise HTTPException(400, "전체 데이터 교체 확인이 필요합니다")
+                db.rollback()
+            result = restore_from_zip_bytes(db, content, request.app.state.video_directory)
         except ValueError as exc:
+            db.rollback()
             raise api_error(exc) from exc
-        return {"message": "복원이 완료되었습니다", "result": result}
+        if version == 3:
+            with request.app.state.console_auth_lock:
+                request.app.state.console_sessions.clear()
+                request.app.state.gcs_sessions.clear()
+            with request.app.state.admin_session_lock:
+                request.app.state.admin_sessions.clear()
+            with request.app.state.manage_session_lock:
+                request.app.state.manage_sessions.clear()
+        return {"message": "복원이 완료되었습니다", "kind": "full" if version == 3 else "stores", "result": result}
 
     return app
 

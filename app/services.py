@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import CallLog, ServiceCounter, Store, Ticket
+from .console_models import TicketAttribution
 
 SERVICE_SIMPLE = "simple_service"
 SERVICE_PURCHASE = "purchase_consult"
@@ -144,7 +145,7 @@ def build_speech_text(service_type: str, ticket_number: int | None) -> str:
     return f"{ticket_number}번 고객님. {SERVICE_META[service_type]['voice_label']} 창구로 와주세요."
 
 
-def issue_ticket(db: Session, store_id: int, service_type: str) -> Ticket:
+def issue_ticket(db: Session, store_id: int, service_type: str, source: str = "direct") -> Ticket:
     validate_service_type(service_type)
     with _counter_lock_for(store_id, service_type):
         store = get_store_or_raise(db, store_id)
@@ -161,6 +162,7 @@ def issue_ticket(db: Session, store_id: int, service_type: str) -> Ticket:
         )
         counter.next_number += 1
         db.add(ticket)
+        db.add(TicketAttribution(ticket=ticket, source=(source.strip()[:120] or "direct")))
         db.commit()
         db.refresh(ticket)
         return ticket

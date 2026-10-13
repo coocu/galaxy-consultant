@@ -198,7 +198,7 @@ function headerHtml(title, subtitle = "", actions = "", extraClass = "") {
 }
 
 function renderHome() {
-  const managementGear = `<button class="viewer-gear home-gear" type="button" data-action="openHomeManage" aria-label="매장 관리">⚙</button>`;
+  const managementGear = `<button class="viewer-gear home-gear" type="button" data-action="openHomeManage" aria-label="관리자 로그인">⚙</button>`;
 
   if (!appState.entryStore) {
     $app.innerHTML = `
@@ -345,6 +345,7 @@ function renderAdminSettingsModal() {
         </div>
         <div class="viewer-settings-actions">
           ${pushButton}
+          ${window.MANAGER_APP ? "" : '<a class="btn btn-ghost" href="/console">운영 리포트</a>'}
           ${selectedStore && !window.MANAGER_APP ? `<a class="btn btn-ghost" href="${customerUrl}" target="_blank" rel="noopener">모니터링 화면</a>` : ""}
           ${selectedService ? `<button class="btn btn-ghost" type="button" data-action="changeAdminService">보기방식</button>` : ""}
           <button class="btn btn-danger" type="button" data-action="logoutAdmin">로그아웃</button>
@@ -457,7 +458,7 @@ function renderAdmin() {
   if (!appState.adminAuthenticated) {
     clearPolling();
     $app.innerHTML = `
-      ${headerHtml("관리자", "인증키를 입력하세요.", `<button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`)}
+      ${headerHtml("관리자", "인증키를 입력해 주세요", `<button class="btn btn-ghost btn-small" data-link="/">처음으로</button>`)}
       <section class="layout-card">
         <div class="search-row">
           <input id="adminKey" class="input" type="password" placeholder="인증키" autocomplete="current-password" />
@@ -860,9 +861,9 @@ function renderManageModal() {
 
 function renderManageUnlock() {
   return `
-    <p class="sub-title">매장 관리전용 인증키를 입력해 주세요.</p>
+    <p class="sub-title">인증키를 입력해 주세요</p>
     <div class="search-row mt-2">
-      <input id="manageKey" class="input" type="password" placeholder="kiosk 매장관리 인증키" />
+      <input id="manageKey" class="input" type="password" placeholder="인증키를 입력해 주세요" />
       <button class="btn btn-primary" data-action="unlockManage">확인</button>
     </div>
   `;
@@ -870,7 +871,7 @@ function renderManageUnlock() {
 
 function renderManageContent() {
   return `
-    <div class="notice">삭제하면 매장 카테고리와 해당 매장의 대기번호 데이터가 삭제됩니다. 백업 ZIP은 매장 카테고리만 포함합니다.</div>
+    <div class="notice">삭제하면 매장 카테고리와 해당 매장의 대기번호 데이터가 삭제됩니다. 새 백업 ZIP은 전체 운영 데이터를 포함하며 운영 콘솔의 추가 인증이 필요합니다.</div>
 
     <div class="manage-row mt-3">
       <input id="addStoreName" class="input" placeholder="새 매장명" />
@@ -1148,6 +1149,7 @@ async function issueTicketForApp(serviceType) {
     json: {
       store_id: appState.selectedCustomerStore.id,
       service_type: serviceType,
+      source: new URLSearchParams(window.location.search).get("utm_source") || "direct",
     },
   });
 
@@ -1285,7 +1287,7 @@ async function downloadBackup() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `codenote_staff_call_backup_${Date.now()}.zip`;
+  link.download = `galaxy_consultant_backup_${Date.now()}.zip`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -1299,7 +1301,7 @@ async function restoreBackup() {
     alert("복원할 ZIP 파일을 선택하세요");
     return;
   }
-  const ok = window.confirm("현재 서버의 매장 카테고리가 백업 파일 기준으로 복원됩니다. 복원할까요?");
+  const ok = window.confirm("이전 매장 ZIP은 매장 정보만, 새 전체 ZIP은 전체 데이터를 백업 시점으로 복원합니다. 복원할까요?");
   if (!ok) return;
 
   const formData = new FormData();
@@ -1533,10 +1535,8 @@ $app.addEventListener("click", (event) => {
   }
 
   if (action === "openHomeManage") {
-    appState.modalOpen = true;
-    appState.managementUnlocked = false;
-    appState.manageSearch = "";
-    renderHome();
+    window.location.href = "/console" + (appState.entryStore?.code ? "?code=" + encodeURIComponent(appState.entryStore.code) : "");
+    return;
   }
 
   if (action === "openAdminSettings") {

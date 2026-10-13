@@ -1,4 +1,4 @@
-"""CodeNote 직원 호출 시스템 패키지."""
+"""Galaxy Consultant 직원 호출 시스템 패키지."""
 
 from .main import create_app
 

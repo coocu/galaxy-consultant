@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Generator
 
 from fastapi import Request
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -18,7 +18,13 @@ def build_engine(database_url: str):
         kwargs["connect_args"] = {"check_same_thread": False}
         if database_url in {"sqlite:///:memory:", "sqlite://"}:
             kwargs["poolclass"] = StaticPool
-    return create_engine(database_url, **kwargs)
+    engine = create_engine(database_url, **kwargs)
+    if database_url.startswith("sqlite"):
+        @event.listens_for(engine, "connect")
+        def sqlite_constraints(connection, _record):
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA busy_timeout=15000")
+    return engine
 
 
 def build_session_factory(engine):

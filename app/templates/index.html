@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Samsung Store Kiosk System</title>
-  <meta name="description" content="CodeNote 직원 호출 시스템" />
+  <title>Galaxy Consultant</title>
+  <meta name="description" content="Galaxy Consultant 직원 호출 시스템" />
   <link rel="stylesheet" href="/static/css/style.css?v=20260923manager1" />
   {% if manager_app | default(false) %}
   <link rel="stylesheet" href="/static/css/manager-web.css?v=20260923manager1" />
@@ -27,9 +27,10 @@
     window.MANAGER_APP = {{ manager_app | default(false) | tojson }};
   </script>
   {% if manager_app | default(false) %}
-  <script src="/static/js/manager-web.js?v=20260923scope2" defer></script>
+  <script src="/static/js/manager-web.js?v=20261013console2" defer></script>
   {% endif %}
   <script src="/static/js/queue-layout.js?v=20260923manager1" defer></script>
-  <script src="/static/js/app.js?v=20260923scope2" defer></script>
+  <script src="/static/js/app.js?v=20261013console1" defer></script>
+  <script src="/static/js/traffic.js?v=20261013" defer></script>
 </body>
 </html>

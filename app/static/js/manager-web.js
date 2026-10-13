@@ -59,8 +59,8 @@ window.ManagerWeb = (() => {
           <p>${store ? escapeHtml(store.name) : "점코드를 입력하세요"}</p>
           <input class="input" id="${store ? "managerKey" : "managerCode"}"
             type="${store ? "password" : "text"}" autocomplete="${store ? "current-password" : "off"}"
-            aria-label="${store ? "관리자 인증키 입력" : "점코드 입력"}"
-            placeholder="${store ? "관리자 인증키 입력" : "점코드 입력"}" />
+            aria-label="${store ? "인증키를 입력해 주세요" : "점코드 입력"}"
+            placeholder="${store ? "인증키를 입력해 주세요" : "점코드 입력"}" />
           <button class="btn btn-primary" data-manager-action="verify" ${busy ? "disabled" : ""}>${busy ? "인증 중…" : "인증하기"}</button>
           ${store ? '<button class="btn btn-ghost" data-manager-action="changeStore">점코드 다시 입력</button>' : ""}
         </section>
@@ -71,7 +71,7 @@ window.ManagerWeb = (() => {
     if (busy) return;
     const input = document.getElementById(store ? "managerKey" : "managerCode");
     const value = (input?.value || "").trim();
-    if (!value) throw new Error(store ? "관리자 인증키를 입력하세요" : "점코드를 입력하세요");
+    if (!value) throw new Error(store ? "인증키를 입력해 주세요" : "점코드를 입력하세요");
     busy = true;
     const button = $app.querySelector('[data-manager-action="verify"]');
     if (button) { button.disabled = true; button.textContent = "인증 중…"; }

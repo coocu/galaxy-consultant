@@ -18,7 +18,7 @@ def config(db_url, sender, enabled=True):
     return {"TESTING": True, "DATABASE_URL": db_url, "SEED_DEFAULT_STORES": False,
             "FCM_ENABLED": enabled, "FCM_PROJECT_ID": "test-project", "FCM_SENDER": sender,
             "AUTH_CHECKER": lambda key: {"status": "approved", "token": "test"}
-            if key in {"test-admin", "kiosk-test-admin"} else {"status": "denied"}}
+            if key in {"test-admin", "kiosk-test-admin", "GCGC-test-key"} else {"status": "denied"}}
 
 
 @pytest.fixture
@@ -265,7 +265,9 @@ def test_store_deletion_cascades_mobile_records(setup):
     app, client, _ = setup
     register(client)
     issue(client)
-    client.post("/api/admin/manage/login", json={"key": "kiosk-test-admin"})
+    assert client.post('/api/console/login', json={'mode':'integrated','name':'GC','username':'하상욱','password':'GCGC-test-key'}).status_code == 200
+    client.headers['X-Console-CSRF'] = client.get('/api/console/me').json()['user']['csrf']
+    assert client.post("/api/admin/manage/login", json={"key": "kiosk-test-admin"}).status_code == 200
     assert client.delete("/api/admin/stores/1").status_code == 200
     assert not rows(app, MobileDevice) and not rows(app, MobilePushDelivery)
 
